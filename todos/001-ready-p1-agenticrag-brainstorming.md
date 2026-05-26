@@ -43,7 +43,7 @@ Use option 2: preserve the approved technical decisions in `DESIGN.md`, but make
 - [x] Present a scoped design for approval.
 - [x] Write the approved design spec under `docs/superpowers/specs/`.
 - [x] Self-review the spec for placeholders, contradictions, and ambiguity.
-- [ ] Ask the user to review the written spec before moving to implementation planning.
+- [x] Ask the user to review the written spec before moving to implementation planning.
 - [ ] After approval, invoke the writing-plans skill.
 
 ## Work Log
@@ -74,3 +74,16 @@ Use option 2: preserve the approved technical decisions in `DESIGN.md`, but make
 
 **Learnings:**
 - The MVP should stream final answers in both traditional RAG and Agentic Loop paths, while keeping intermediate tool output as compact status lines.
+
+### 2026-05-26 - Spec Committed
+
+**By:** Codex
+
+**Actions:**
+- Initialized a Git repository in the project directory.
+- Added remote `origin` at `https://github.com/jidechao/Microsoft-AgenticRAG.git`.
+- Committed the approved planning files with commit `4d18ecc`.
+- Pushed `main` to GitHub and set upstream tracking to `origin/main`.
+
+**Learnings:**
+- The GitHub repository was empty, so local initialization and first push were enough to satisfy the brainstorming commit requirement.
