@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ class RetrievedChunk:
         return self.chunk.content[:200]
 
 
-@dataclass
+@dataclass(frozen=True)
 class Reference:
     reference_id: str
     chunk: DocumentChunk
@@ -55,4 +56,7 @@ class ToolResult:
 class ToolCall:
     id: str
     name: str
-    arguments: dict[str, Any]
+    arguments: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arguments", MappingProxyType(dict(self.arguments)))
