@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from agenticrag.chat import build_rewrite_messages, parse_rewrite_response, rewrite_query
+from agenticrag.chat import (
+    ChatSession,
+    build_rewrite_messages,
+    parse_rewrite_response,
+    rewrite_query,
+)
 from agenticrag.models import DocumentChunk, Reference
 from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
 from agenticrag.state import ConversationState
@@ -129,3 +134,74 @@ def test_rewrite_query_falls_back_for_empty_json():
     state = ConversationState(user_query="第二个模块是什么？")
 
     assert rewrite_query(FakeLLMClient(), state, "它有什么作用？") == "它有什么作用？"
+
+
+def test_chat_session_simple_route_rewrites_searches_streams_and_records_state(monkeypatch):
+    raw_query = "它有什么作用？"
+    rewritten_query = "请详细说明AgenticRAG的第二个模块有什么作用？"
+
+    class FakeLLMClient:
+        def stream(self, messages):
+            raise AssertionError("stream_simple_chat is monkeypatched")
+
+    class FakeTools:
+        def __init__(self):
+            self.search_calls = []
+            self.state = None
+
+        def search(self, queries):
+            self.search_calls.append(queries)
+            self.state.references["turn0search0"] = Reference(
+                reference_id="turn0search0",
+                chunk=DocumentChunk(
+                    doc_id="doc-1",
+                    path=Path("docs/design.md"),
+                    title="AgenticRAG设计文档",
+                    filetype="markdown",
+                    chunk_index=0,
+                    line_start=0,
+                    line_end=10,
+                    content="第二个模块介绍",
+                ),
+            )
+            return "[turn0search0] context"
+
+    def fake_rewrite(llm_client, state, user_input):
+        assert user_input == raw_query
+        assert state.messages[-1] == {"role": "user", "content": raw_query}
+        return rewritten_query
+
+    def fake_classify(llm_client, query):
+        assert query == rewritten_query
+        return "simple"
+
+    def fake_stream_simple(llm_client, raw_value, rewritten_value, search_context):
+        assert raw_value == raw_query
+        assert rewritten_value == rewritten_query
+        assert search_context == "[turn0search0] context"
+        yield "chunk one "
+        yield "chunk two"
+
+    monkeypatch.setattr("agenticrag.chat.rewrite_query", fake_rewrite)
+    monkeypatch.setattr("agenticrag.chat.classify_query", fake_classify)
+    monkeypatch.setattr("agenticrag.chat.stream_simple_chat", fake_stream_simple)
+
+    tools = FakeTools()
+    session = ChatSession(
+        llm_client=FakeLLMClient(),
+        tools=tools,
+        max_calls=3,
+        token_threshold=10000,
+        token_warning_ratio=0.8,
+    )
+    tools.state = session.state
+
+    chunks = list(session.answer_turn(raw_query))
+
+    assert chunks == ["chunk one ", "chunk two"]
+    assert tools.search_calls == [[rewritten_query]]
+    assert session.state.messages == [
+        {"role": "user", "content": raw_query},
+        {"role": "assistant", "content": "chunk one chunk two"},
+    ]
+    assert "turn0search0" in session.state.references

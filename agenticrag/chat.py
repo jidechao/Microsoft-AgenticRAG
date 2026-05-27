@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
-from agenticrag.prompts import QUERY_REWRITE_PROMPT
+from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
 from agenticrag.state import ConversationState
+from agenticrag.switcher import classify_query
 
 Message = dict[str, str]
 
 
 class SupportsComplete(Protocol):
     def complete(self, *, messages: list[Message]) -> str: ...
+
+
+class SupportsStream(Protocol):
+    def stream(self, messages: list[Message]) -> Iterator[str]: ...
 
 
 def _json_candidates(text: str) -> list[str]:
@@ -103,3 +108,86 @@ def rewrite_query(
         return parse_rewrite_response(response, user_input)
     except Exception:
         return user_input
+
+
+def stream_simple_chat(
+    llm_client: SupportsStream,
+    raw_query: str,
+    rewritten_query: str,
+    search_context: str,
+) -> Iterator[str]:
+    messages = [
+        {"role": "system", "content": CHAT_SIMPLE_RAG_PROMPT},
+        {
+            "role": "user",
+            "content": "\n\n".join(
+                [
+                    "Raw user question:",
+                    raw_query,
+                    "Rewritten self-contained question:",
+                    rewritten_query,
+                    "Search results/context:",
+                    search_context,
+                ]
+            ),
+        },
+    ]
+    yield from llm_client.stream(messages)
+
+
+class ChatSession:
+    def __init__(
+        self,
+        *,
+        llm_client: SupportsComplete,
+        tools: Any,
+        max_calls: int,
+        token_threshold: int,
+        token_warning_ratio: float,
+    ) -> None:
+        self.llm_client = llm_client
+        self.tools = tools
+        self.max_calls = max_calls
+        self.token_threshold = token_threshold
+        self.token_warning_ratio = token_warning_ratio
+        self.state = self._new_state()
+        self._attach_tools_state()
+
+    def reset(self) -> None:
+        self.state = self._new_state()
+        self._attach_tools_state()
+
+    def answer_turn(self, user_input: str) -> Iterator[str]:
+        self.state.add_message("user", user_input)
+        rewritten_query = rewrite_query(self.llm_client, self.state, user_input)
+        try:
+            route = classify_query(self.llm_client, rewritten_query)
+        except Exception:
+            route = "complex"
+
+        if route == "simple":
+            search_context = self.tools.search([rewritten_query])
+            chunks: list[str] = []
+            for chunk in stream_simple_chat(
+                self.llm_client,
+                user_input,
+                rewritten_query,
+                search_context,
+            ):
+                chunks.append(chunk)
+                yield chunk
+            self.state.add_message("assistant", "".join(chunks))
+            return
+
+        raise NotImplementedError("complex chat route is implemented in Task 4")
+
+    @staticmethod
+    def _new_state() -> ConversationState:
+        state = ConversationState(user_query="")
+        if state.messages == [{"role": "user", "content": ""}]:
+            state.messages.clear()
+        return state
+
+    def _attach_tools_state(self) -> None:
+        if hasattr(self.tools, "state"):
+            self.tools.state = self.state
