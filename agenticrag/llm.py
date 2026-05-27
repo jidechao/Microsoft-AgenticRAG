@@ -32,7 +32,11 @@ class DeepSeekClient:
             messages=messages,
             stream=False,
         )
-        return response.choices[0].message.content or ""
+        choices = getattr(response, "choices", None)
+        if not choices:
+            return ""
+        message = getattr(choices[0], "message", None)
+        return getattr(message, "content", None) or ""
 
     def stream(self, messages: list[dict[str, Any]]) -> Iterator[str]:
         events = self.client.chat.completions.create(
