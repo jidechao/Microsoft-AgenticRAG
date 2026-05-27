@@ -144,12 +144,17 @@ def test_execute_retrieval_tool_returns_unknown_tool_error():
 def test_execute_retrieval_tool_validates_argument_shapes():
     tools = FakeRetrievalTools()
 
+    assert execute_retrieval_tool(
+        tools,
+        "open",
+        {"reference_id": "turn0search0"},
+    ) == "[tool error] open: line_number must be an integer"
+
     invalid_calls = [
         ("search", {"queries": "q"}),
         ("find", {"reference_id": 1, "patterns": ["agent"]}),
         ("find", {"reference_id": "turn0search0", "patterns": "agent"}),
         ("open", {"reference_id": 1, "line_number": 7}),
-        ("open", {"reference_id": "turn0search0"}),
         ("open", {"reference_id": "turn0search0", "line_number": "7"}),
         ("summarize", {"candidate_reference_ids": "turn0search0"}),
     ]

@@ -67,11 +67,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "line_number": {
                         "type": "integer",
                         "minimum": 0,
-                        "default": 0,
-                        "description": "One-based line number to center, or 0 to use the reference line.",
+                        "description": "One-based line number to center. Use 0 to center on the reference line.",
                     },
                 },
-                "required": ["reference_id"],
+                "required": ["reference_id", "line_number"],
                 "additionalProperties": False,
             },
         },
