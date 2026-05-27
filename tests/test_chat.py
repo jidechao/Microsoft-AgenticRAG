@@ -205,3 +205,132 @@ def test_chat_session_simple_route_rewrites_searches_streams_and_records_state(m
         {"role": "assistant", "content": "chunk one chunk two"},
     ]
     assert "turn0search0" in session.state.references
+
+
+def test_chat_session_complex_route_streams_status_and_records_answer(monkeypatch):
+    raw_query = "What does the second module do?"
+    rewritten_query = "Explain what the second AgenticRAG module does."
+    status_updates = []
+    capture_status_writer = status_updates.append
+
+    class FakeLLMClient:
+        pass
+
+    class FakeTools:
+        def __init__(self):
+            self.search_calls = []
+            self.state = None
+
+        def search(self, queries):
+            self.search_calls.append(queries)
+            self.state.references["turn0search0"] = Reference(
+                reference_id="turn0search0",
+                chunk=DocumentChunk(
+                    doc_id="doc-1",
+                    path=Path("docs/design.md"),
+                    title="AgenticRAG design",
+                    filetype="markdown",
+                    chunk_index=0,
+                    line_start=0,
+                    line_end=10,
+                    content="The second module coordinates retrieval tools.",
+                ),
+            )
+            return "[turn0search0] context"
+
+    def fake_rewrite(llm_client, state, user_input):
+        assert user_input == raw_query
+        assert state.messages[-1] == {"role": "user", "content": raw_query}
+        return rewritten_query
+
+    def fake_classify(llm_client, query):
+        assert query == rewritten_query
+        return "complex"
+
+    def fake_run_agentic_loop(
+        llm_client,
+        state,
+        tool_executor,
+        max_calls,
+        token_threshold,
+        token_warning_ratio,
+        status_writer,
+    ):
+        assert llm_client is fake_llm_client
+        assert state is session.state
+        assert max_calls == 3
+        assert token_threshold == 10000
+        assert token_warning_ratio == 0.8
+        assert status_writer is capture_status_writer
+        latest_message = state.messages[-1]
+        assert latest_message["role"] == "user"
+        assert raw_query in latest_message["content"]
+        assert rewritten_query in latest_message["content"]
+        status_writer("[tool] search")
+        assert tool_executor("search", {"queries": [rewritten_query]}) == "[turn0search0] context"
+        yield "complex chunk one "
+        yield "complex chunk two"
+
+    monkeypatch.setattr("agenticrag.chat.rewrite_query", fake_rewrite)
+    monkeypatch.setattr("agenticrag.chat.classify_query", fake_classify)
+    monkeypatch.setattr("agenticrag.chat.run_agentic_loop", fake_run_agentic_loop)
+
+    fake_llm_client = FakeLLMClient()
+    tools = FakeTools()
+    session = ChatSession(
+        llm_client=fake_llm_client,
+        tools=tools,
+        max_calls=3,
+        token_threshold=10000,
+        token_warning_ratio=0.8,
+    )
+
+    chunks = list(session.answer_turn(raw_query, status_writer=capture_status_writer))
+
+    assert chunks == ["complex chunk one ", "complex chunk two"]
+    assert status_updates == ["[tool] search"]
+    assert tools.search_calls == [[rewritten_query]]
+    assert session.state.messages[-1] == {
+        "role": "assistant",
+        "content": "complex chunk one complex chunk two",
+    }
+    assert "turn0search0" in session.state.references
+
+
+def test_chat_session_reset_clears_state_refs_and_keeps_empty_fresh_history():
+    class FakeLLMClient:
+        pass
+
+    class FakeTools:
+        def __init__(self):
+            self.state = None
+
+    tools = FakeTools()
+    session = ChatSession(
+        llm_client=FakeLLMClient(),
+        tools=tools,
+        max_calls=3,
+        token_threshold=10000,
+        token_warning_ratio=0.8,
+    )
+    session.state.add_message("user", "previous question")
+    session.state.references["turn0search0"] = Reference(
+        reference_id="turn0search0",
+        chunk=DocumentChunk(
+            doc_id="doc-1",
+            path=Path("docs/design.md"),
+            title="AgenticRAG design",
+            filetype="markdown",
+            chunk_index=0,
+            line_start=0,
+            line_end=10,
+            content="Previous context.",
+        ),
+    )
+
+    session.reset()
+
+    assert session.state.references == {}
+    assert tools.state is session.state
+    # ChatSession deliberately hides ConversationState's synthetic empty initial user message.
+    assert session.state.messages == []

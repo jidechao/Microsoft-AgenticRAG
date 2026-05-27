@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any, Iterator, Protocol
 
+from agenticrag.loop import execute_retrieval_tool, run_agentic_loop
 from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
 from agenticrag.state import ConversationState
 from agenticrag.switcher import classify_query
@@ -157,7 +158,12 @@ class ChatSession:
         self.state = self._new_state()
         self._attach_tools_state()
 
-    def answer_turn(self, user_input: str) -> Iterator[str]:
+    def answer_turn(
+        self,
+        user_input: str,
+        status_writer: Any | None = None,
+    ) -> Iterator[str]:
+        writer = status_writer or (lambda text: None)
         self.state.add_message("user", user_input)
         rewritten_query = rewrite_query(self.llm_client, self.state, user_input)
         try:
@@ -179,7 +185,32 @@ class ChatSession:
             self.state.add_message("assistant", "".join(chunks))
             return
 
-        raise NotImplementedError("complex chat route is implemented in Task 4")
+        self.state.add_message(
+            "user",
+            "\n".join(
+                [
+                    f"Raw user question: {user_input}",
+                    f"Rewritten self-contained question: {rewritten_query}",
+                ]
+            ),
+        )
+        chunks = []
+        for chunk in run_agentic_loop(
+            self.llm_client,
+            self.state,
+            lambda name, arguments: execute_retrieval_tool(
+                self.tools,
+                name,
+                arguments,
+            ),
+            max_calls=self.max_calls,
+            token_threshold=self.token_threshold,
+            token_warning_ratio=self.token_warning_ratio,
+            status_writer=writer,
+        ):
+            chunks.append(chunk)
+            yield chunk
+        self.state.add_message("assistant", "".join(chunks))
 
     @staticmethod
     def _new_state() -> ConversationState:
