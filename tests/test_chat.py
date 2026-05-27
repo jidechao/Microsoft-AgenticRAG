@@ -8,6 +8,7 @@ from agenticrag.chat import (
 )
 from agenticrag.models import DocumentChunk, Reference
 from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
+from agenticrag.prompts import SYSTEM_PROMPT
 from agenticrag.state import ConversationState
 
 
@@ -301,6 +302,106 @@ def test_chat_session_complex_route_streams_status_and_records_answer(monkeypatc
         "content": "complex chunk one complex chunk two",
     }
     assert "turn0search0" in session.state.references
+
+
+def test_chat_session_complex_route_removes_internal_loop_messages_and_keeps_refs(monkeypatch):
+    raw_query = "Where is retrieval coordinated?"
+    rewritten_query = "Explain where AgenticRAG coordinates retrieval."
+
+    class FakeLLMClient:
+        pass
+
+    class FakeTools:
+        def __init__(self):
+            self.state = None
+
+        def search(self, queries):
+            self.state.references["turn0search0"] = Reference(
+                reference_id="turn0search0",
+                chunk=DocumentChunk(
+                    doc_id="doc-1",
+                    path=Path("docs/design.md"),
+                    title="AgenticRAG design",
+                    filetype="markdown",
+                    chunk_index=0,
+                    line_start=0,
+                    line_end=10,
+                    content="Retrieval is coordinated by the agentic loop.",
+                ),
+            )
+            self.state.add_tool_result(
+                "search",
+                "[turn0search0] context",
+                metadata={"reference_ids": ["turn0search0"]},
+            )
+            return "[turn0search0] context"
+
+    def fake_run_agentic_loop(
+        llm_client,
+        state,
+        tool_executor,
+        max_calls,
+        token_threshold,
+        token_warning_ratio,
+        status_writer,
+    ):
+        state.messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+        state.add_message(
+            "assistant",
+            "",
+            tool_calls=[
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                }
+            ],
+        )
+        tool_executor("search", {"queries": [rewritten_query]})
+        yield "final answer"
+
+    monkeypatch.setattr(
+        "agenticrag.chat.rewrite_query",
+        lambda llm_client, state, user_input: rewritten_query,
+    )
+    monkeypatch.setattr(
+        "agenticrag.chat.classify_query",
+        lambda llm_client, query: "complex",
+    )
+    monkeypatch.setattr("agenticrag.chat.run_agentic_loop", fake_run_agentic_loop)
+
+    tools = FakeTools()
+    session = ChatSession(
+        llm_client=FakeLLMClient(),
+        tools=tools,
+        max_calls=3,
+        token_threshold=10000,
+        token_warning_ratio=0.8,
+    )
+
+    assert list(session.answer_turn(raw_query)) == ["final answer"]
+
+    assert session.state.messages == [
+        {
+            "role": "user",
+            "content": "\n".join(
+                [
+                    f"Raw user question: {raw_query}",
+                    f"Rewritten self-contained question: {rewritten_query}",
+                ]
+            ),
+        },
+        {"role": "assistant", "content": "final answer"},
+    ]
+    assert all(message.get("content") != SYSTEM_PROMPT for message in session.state.messages)
+    assert not any(
+        message.get("role") == "assistant"
+        and message.get("content") == ""
+        and "tool_calls" in message
+        for message in session.state.messages
+    )
+    assert "turn0search0" in session.state.references
+    assert [tool_result.name for tool_result in session.state.tool_results] == ["search"]
 
 
 def test_chat_session_reset_clears_state_refs_and_keeps_empty_fresh_history():

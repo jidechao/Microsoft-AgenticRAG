@@ -191,22 +191,30 @@ class ChatSession:
                 f"Rewritten self-contained question: {rewritten_query}",
             ]
         )
+        chat_visible_messages = [dict(message) for message in self.state.messages]
         chunks = []
-        for chunk in run_agentic_loop(
-            self.llm_client,
-            self.state,
-            lambda name, arguments: execute_retrieval_tool(
-                self.tools,
-                name,
-                arguments,
-            ),
-            max_calls=self.max_calls,
-            token_threshold=self.token_threshold,
-            token_warning_ratio=self.token_warning_ratio,
-            status_writer=writer,
-        ):
-            chunks.append(chunk)
-            yield chunk
+        completed = False
+        try:
+            for chunk in run_agentic_loop(
+                self.llm_client,
+                self.state,
+                lambda name, arguments: execute_retrieval_tool(
+                    self.tools,
+                    name,
+                    arguments,
+                ),
+                max_calls=self.max_calls,
+                token_threshold=self.token_threshold,
+                token_warning_ratio=self.token_warning_ratio,
+                status_writer=writer,
+            ):
+                chunks.append(chunk)
+                yield chunk
+            completed = True
+        finally:
+            self.state.messages = [dict(message) for message in chat_visible_messages]
+        if not completed:
+            return
         self.state.add_message("assistant", "".join(chunks))
 
     @staticmethod
