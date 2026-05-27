@@ -65,6 +65,29 @@ def test_main_configures_stdio_before_dispatch(monkeypatch):
     assert calls == ["configured", "index"]
 
 
+def test_configure_stdio_reconfigures_standard_streams(monkeypatch):
+    calls = []
+
+    class FakeStream:
+        def __init__(self, name):
+            self.name = name
+
+        def reconfigure(self, **kwargs):
+            calls.append((self.name, kwargs))
+
+    monkeypatch.setattr(cli.sys, "stdin", FakeStream("stdin"))
+    monkeypatch.setattr(cli.sys, "stdout", FakeStream("stdout"))
+    monkeypatch.setattr(cli.sys, "stderr", FakeStream("stderr"))
+
+    cli.configure_stdio()
+
+    assert calls == [
+        ("stdin", {"encoding": "utf-8", "errors": "replace"}),
+        ("stdout", {"encoding": "utf-8", "errors": "replace"}),
+        ("stderr", {"encoding": "utf-8", "errors": "replace"}),
+    ]
+
+
 def test_run_ask_simple_route_streams_chunks(monkeypatch, capsys, tmp_path):
     from agenticrag import loop
 

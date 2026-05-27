@@ -13,7 +13,7 @@ from agenticrag.retriever import ChromaRetriever
 
 
 def configure_stdio() -> None:
-    for stream in (sys.stdout, sys.stderr):
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
 
