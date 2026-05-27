@@ -185,14 +185,11 @@ class ChatSession:
             self.state.add_message("assistant", "".join(chunks))
             return
 
-        self.state.add_message(
-            "user",
-            "\n".join(
-                [
-                    f"Raw user question: {user_input}",
-                    f"Rewritten self-contained question: {rewritten_query}",
-                ]
-            ),
+        self.state.messages[-1]["content"] = "\n".join(
+            [
+                f"Raw user question: {user_input}",
+                f"Rewritten self-contained question: {rewritten_query}",
+            ]
         )
         chunks = []
         for chunk in run_agentic_loop(

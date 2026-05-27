@@ -290,6 +290,12 @@ def test_chat_session_complex_route_streams_status_and_records_answer(monkeypatc
     assert chunks == ["complex chunk one ", "complex chunk two"]
     assert status_updates == ["[tool] search"]
     assert tools.search_calls == [[rewritten_query]]
+    user_messages = [
+        message for message in session.state.messages if message["role"] == "user"
+    ]
+    assert len(user_messages) == 1
+    assert raw_query in user_messages[0]["content"]
+    assert rewritten_query in user_messages[0]["content"]
     assert session.state.messages[-1] == {
         "role": "assistant",
         "content": "complex chunk one complex chunk two",
