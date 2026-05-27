@@ -12,7 +12,7 @@ class Event:
         ]
 
 
-def test_collect_stream_text_yields_content_fragments_and_skips_none():
-    events = [Event("你"), Event("好"), Event(None)]
+def test_collect_stream_text_yields_content_fragments_and_skips_falsy_content():
+    events = [Event("你"), Event(""), Event("好"), Event(None)]
 
     assert list(collect_stream_text(events)) == ["你", "好"]

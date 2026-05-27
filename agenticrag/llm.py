@@ -12,7 +12,7 @@ def collect_stream_text(events: Iterable[Any]) -> Iterator[str]:
             continue
         delta = getattr(choices[0], "delta", None)
         content = getattr(delta, "content", None)
-        if content is not None:
+        if content:
             yield content
 
 
