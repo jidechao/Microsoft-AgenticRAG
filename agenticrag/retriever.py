@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import chromadb
+from chromadb.errors import NotFoundError
 
 from agenticrag.embeddings import EmbeddingClient
 from agenticrag.models import DocumentChunk, RetrievedChunk
@@ -24,7 +25,7 @@ class ChromaRetriever:
     def reset(self) -> None:
         try:
             self.client.delete_collection(self.collection_name)
-        except Exception:
+        except NotFoundError:
             pass
         self.collection = self.client.get_or_create_collection(self.collection_name)
 
@@ -49,9 +50,13 @@ class ChromaRetriever:
             n_results=top_k,
             include=["documents", "metadatas", "distances"],
         )
-        documents = response.get("documents", [[]])[0]
-        metadatas = response.get("metadatas", [[]])[0]
-        distances = response.get("distances", [[]])[0]
+        documents = self._extract_query_field(response, "documents")
+        metadatas = self._extract_query_field(response, "metadatas")
+        distances = self._extract_query_field(response, "distances")
+        if not documents and not metadatas and not distances:
+            return []
+        if not (len(documents) == len(metadatas) == len(distances)):
+            raise ValueError("Chroma query response has misaligned result lengths")
         results: list[RetrievedChunk] = []
         for document, metadata, distance in zip(documents, metadatas, distances):
             chunk = DocumentChunk(
@@ -66,3 +71,23 @@ class ChromaRetriever:
             )
             results.append(RetrievedChunk(chunk=chunk, score=float(distance)))
         return results
+
+    @staticmethod
+    def _extract_query_field(response: dict, field_name: str) -> list:
+        if field_name not in response:
+            raise ValueError(f"Chroma query response missing '{field_name}'")
+        outer = response[field_name]
+        if outer is None:
+            raise ValueError(f"Chroma query response has null '{field_name}'")
+        if not isinstance(outer, list):
+            raise ValueError(f"Chroma query response field '{field_name}' must be a list")
+        if not outer:
+            return []
+        first = outer[0]
+        if first is None:
+            raise ValueError(f"Chroma query response has null first '{field_name}' batch")
+        if not isinstance(first, list):
+            raise ValueError(
+                f"Chroma query response field '{field_name}' must contain result lists"
+            )
+        return first
