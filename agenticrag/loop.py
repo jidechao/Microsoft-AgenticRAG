@@ -85,6 +85,33 @@ def _parse_tool_arguments(tool_call: Any) -> dict[str, Any]:
     return parsed
 
 
+def _tool_call_as_message_dict(tool_call: Any) -> dict[str, Any]:
+    function = _tool_call_function(tool_call)
+    return {
+        "id": _tool_call_id(tool_call),
+        "type": _get_value(tool_call, "type", "function"),
+        "function": {
+            "name": _get_value(function, "name", ""),
+            "arguments": _get_value(function, "arguments", ""),
+        },
+    }
+
+
+def _attach_tool_call_id_to_new_tool_message(
+    state: ConversationState,
+    start_index: int,
+    tool_call_id: str,
+    name: str,
+) -> bool:
+    for message in reversed(state.messages[start_index:]):
+        if message.get("role") != "tool":
+            continue
+        message["tool_call_id"] = tool_call_id
+        message["name"] = name
+        return True
+    return False
+
+
 def run_agentic_loop(
     llm_client: Any,
     state: ConversationState,
@@ -111,17 +138,32 @@ def run_agentic_loop(
         tool_calls = _get_value(message, "tool_calls")
 
         if tool_calls:
+            state.add_message(
+                "assistant",
+                _get_value(message, "content") or "",
+                tool_calls=[
+                    _tool_call_as_message_dict(tool_call) for tool_call in tool_calls
+                ],
+            )
             for tool_call in tool_calls:
                 name = _tool_call_name(tool_call)
                 arguments = _parse_tool_arguments(tool_call)
                 status_writer(f"[tool] {name}")
+                message_start_index = len(state.messages)
                 result = tool_executor(name, arguments)
-                state.add_message(
-                    "tool",
-                    result,
-                    tool_call_id=_tool_call_id(tool_call),
-                    name=name,
-                )
+                tool_call_id = _tool_call_id(tool_call)
+                if not _attach_tool_call_id_to_new_tool_message(
+                    state,
+                    message_start_index,
+                    tool_call_id,
+                    name,
+                ):
+                    state.add_message(
+                        "tool",
+                        result,
+                        tool_call_id=tool_call_id,
+                        name=name,
+                    )
             continue
 
         content = _get_value(message, "content") or ""

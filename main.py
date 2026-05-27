@@ -12,6 +12,12 @@ from agenticrag.ingest import write_source_cache
 from agenticrag.retriever import ChromaRetriever
 
 
+def configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AgenticRAG CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -49,6 +55,7 @@ def run_index() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
 

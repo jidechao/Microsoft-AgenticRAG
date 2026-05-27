@@ -34,6 +34,16 @@ def test_main_dispatches_ask(monkeypatch):
     assert calls == [query]
 
 
+def test_main_configures_stdio_before_dispatch(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(cli, "configure_stdio", lambda: calls.append("configured"))
+    monkeypatch.setattr(cli, "run_index", lambda: calls.append("index") or 0)
+
+    assert cli.main(["index"]) == 0
+    assert calls == ["configured", "index"]
+
+
 def test_run_ask_simple_route_streams_chunks(monkeypatch, capsys, tmp_path):
     from agenticrag import loop
 

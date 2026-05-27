@@ -102,6 +102,20 @@ def test_run_agentic_loop_executes_tool_and_returns_final_answer():
     assert llm.tool_call_calls[0][1] == TOOL_SCHEMAS
     assert statuses == ["[tool] search"]
     assert tool_calls == [("search", {"queries": ["alpha"]})]
+    assert state.messages[-2] == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "arguments": '{"queries": ["alpha"]}',
+                },
+            }
+        ],
+    }
     assert state.messages[-1] == {
         "role": "tool",
         "content": "tool result",
@@ -243,6 +257,20 @@ def test_run_agentic_loop_handles_dict_shaped_tool_calls():
 
     assert chunks == ["done"]
     assert tool_calls == [("find", {"reference_id": "ref", "patterns": ["a"]})]
+    assert state.messages[-2] == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "dict-call",
+                "type": "function",
+                "function": {
+                    "name": "find",
+                    "arguments": '{"reference_id": "ref", "patterns": ["a"]}',
+                },
+            }
+        ],
+    }
     assert state.messages[-1] == {
         "role": "tool",
         "content": "found",
@@ -291,6 +319,56 @@ def test_run_agentic_loop_passes_error_dict_for_invalid_tool_arguments():
         ("search", {"_error": "invalid tool arguments"}),
         ("search", {"_error": "tool arguments must be a JSON object"}),
         ("search", {"_error": "tool arguments must be a JSON object"}),
+    ]
+    tool_messages = [message for message in state.messages if message["role"] == "tool"]
+    assert [message["tool_call_id"] for message in tool_messages] == [
+        "invalid-json",
+        "none",
+        "empty",
+        "array",
+        "scalar",
+    ]
+
+
+def test_run_agentic_loop_adds_provider_tool_call_id_to_tool_executor_messages():
+    tool = tool_call("call-1", "search", '{"queries": ["alpha"]}')
+    llm = FakeLLM(
+        responses=[
+            message_response(tool_calls=[tool]),
+            message_response(content="done"),
+        ]
+    )
+    state = ConversationState(user_query="question")
+
+    def execute(name, arguments):
+        state.add_tool_result(
+            name,
+            "stored tool result",
+            metadata={"reference_ids": ["turn0search0"]},
+        )
+        return "stored tool result"
+
+    chunks = list(
+        run_agentic_loop(
+            llm,
+            state,
+            execute,
+            max_calls=2,
+            token_threshold=10_000,
+            token_warning_ratio=0.8,
+            status_writer=lambda status: None,
+        )
+    )
+
+    tool_messages = [message for message in state.messages if message["role"] == "tool"]
+    assert chunks == ["done"]
+    assert tool_messages == [
+        {
+            "role": "tool",
+            "name": "search",
+            "content": "stored tool result",
+            "tool_call_id": "call-1",
+        }
     ]
 
 
