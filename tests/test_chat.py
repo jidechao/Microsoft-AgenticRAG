@@ -6,6 +6,24 @@ from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
 from agenticrag.state import ConversationState
 
 
+def test_parse_rewrite_response_extracts_fenced_json():
+    response = '```json\n{"query": "explain module two"}\n```'
+
+    assert parse_rewrite_response(response, "fallback") == "explain module two"
+
+
+def test_parse_rewrite_response_extracts_plain_fenced_json():
+    response = '```\n{"query": "explain module two"}\n```'
+
+    assert parse_rewrite_response(response, "fallback") == "explain module two"
+
+
+def test_parse_rewrite_response_extracts_json_with_surrounding_text():
+    response = 'Here is the JSON: {"query": "explain module two"}'
+
+    assert parse_rewrite_response(response, "fallback") == "explain module two"
+
+
 def test_rewrite_query_falls_back_when_complete_raises():
     class FakeLLMClient:
         def complete(self, *, messages):

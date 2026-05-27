@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Protocol
 
 from agenticrag.prompts import QUERY_REWRITE_PROMPT
@@ -13,21 +14,32 @@ class SupportsComplete(Protocol):
     def complete(self, *, messages: list[Message]) -> str: ...
 
 
+def _json_candidates(text: str) -> list[str]:
+    candidates = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    candidates.append(text)
+    candidates.extend(re.findall(r"\{.*?\}", text, flags=re.DOTALL))
+    return candidates
+
+
 def parse_rewrite_response(text: str, fallback: str) -> str:
-    try:
-        payload: Any = json.loads(text)
-    except json.JSONDecodeError:
-        return fallback
+    for candidate in _json_candidates(text):
+        try:
+            payload: Any = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
 
-    if not isinstance(payload, dict):
-        return fallback
+        if not isinstance(payload, dict):
+            continue
 
-    query = payload.get("query")
-    if not isinstance(query, str):
-        return fallback
+        query = payload.get("query")
+        if not isinstance(query, str):
+            continue
 
-    query = query.strip()
-    return query or fallback
+        query = query.strip()
+        if query:
+            return query
+
+    return fallback
 
 
 def _reference_summary(state: ConversationState, limit: int = 12) -> str:
@@ -85,9 +97,9 @@ def rewrite_query(
     state: ConversationState,
     user_input: str,
 ) -> str:
+    messages = build_rewrite_messages(state, user_input)
     try:
-        response = llm_client.complete(messages=build_rewrite_messages(state, user_input))
+        response = llm_client.complete(messages=messages)
+        return parse_rewrite_response(response, user_input)
     except Exception:
         return user_input
-
-    return parse_rewrite_response(response, user_input)
