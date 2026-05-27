@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 from pathlib import Path
 
 from agenticrag.models import DocumentChunk
@@ -176,13 +177,17 @@ def scan_documents(docs_dir: Path) -> list[Path]:
     )
 
 
+def has_supported_documents(docs_dir: Path) -> bool:
+    return any(scan_documents(docs_dir))
+
+
 def parse_corpus(docs_dir: Path) -> list[DocumentChunk]:
     chunks: list[DocumentChunk] = []
     for path in scan_documents(docs_dir):
         try:
             chunks.extend(parse_document(path))
         except Exception as exc:
-            print(f"[warn] failed to parse {path}: {exc}")
+            print(f"[warn] failed to parse {path}: {exc}", file=sys.stderr)
     return chunks
 
 

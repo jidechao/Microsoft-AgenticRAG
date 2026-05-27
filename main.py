@@ -6,6 +6,7 @@ import sys
 from agenticrag.config import ConfigError
 from agenticrag.config import load_config
 from agenticrag.embeddings import SiliconFlowEmbeddingClient
+from agenticrag.ingest import has_supported_documents
 from agenticrag.ingest import parse_corpus
 from agenticrag.ingest import write_source_cache
 from agenticrag.retriever import ChromaRetriever
@@ -24,16 +25,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run_index() -> int:
     config = load_config()
+    has_documents = has_supported_documents(config.docs_dir)
+    chunks = parse_corpus(config.docs_dir)
+    if not chunks:
+        if has_documents:
+            print(f"No chunks parsed from supported documents under {config.docs_dir}")
+        else:
+            print(f"No supported documents found under {config.docs_dir}")
+        return 1
+
     embedding_client = SiliconFlowEmbeddingClient(
         api_key=config.siliconflow_api_key,
         base_url=config.siliconflow_base_url,
         model=config.siliconflow_embedding_model,
     )
     retriever = ChromaRetriever(config.chroma_dir, embedding_client)
-    chunks = parse_corpus(config.docs_dir)
-    if not chunks:
-        print(f"No supported documents found under {config.docs_dir}")
-        return 1
 
     retriever.reset()
     retriever.add_chunks(chunks)
@@ -50,8 +56,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "index":
             return run_index()
         if args.command == "ask":
-            from agenticrag.loop import run_ask
+            from agenticrag import loop as loop_module
 
+            run_ask = getattr(loop_module, "run_ask", None)
+            if run_ask is None:
+                print("ask command is not implemented yet", file=sys.stderr)
+                return 1
             return run_ask(args.query)
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
