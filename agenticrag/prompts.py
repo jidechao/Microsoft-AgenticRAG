@@ -4,6 +4,13 @@ Use simple for single-intent factual questions.
 Use complex for multi-step, multi-document, comparison, long-document, or ambiguous questions.
 """
 
+QUERY_REWRITE_PROMPT = """Rewrite the current user question into a self-contained question for a multi-turn AgenticRAG session.
+Use the recent conversation and available Reference IDs only to resolve context, pronouns, ellipsis, or follow-up meaning.
+Return the current question unchanged if it is already self-contained.
+Do not answer the question.
+Return only strict JSON in this exact shape: {"query": "..."}.
+"""
+
 SYSTEM_PROMPT = """# Overall Instructions
 - Search before answering when uncertain.
 - Progressively explore using 'find' or 'open' when snippets are insufficient.
@@ -33,6 +40,11 @@ SYSTEM_PROMPT = """# Overall Instructions
 
 SIMPLE_RAG_PROMPT = """请基于给定检索片段回答用户问题。必须引用片段中的 Reference ID。如果证据不足，请明确说明。
 """
+
+CHAT_SIMPLE_RAG_PROMPT = """你将看到原始用户问题、改写后的自包含问题和检索结果。
+请回答原始用户问题；必要时使用改写后的问题来理解上下文、指代、省略或追问。
+回答必须基于检索结果，并引用使用到的 Reference ID。
+如果证据不足，请清楚说明证据不足，不要编造答案。"""
 
 FORCE_FINAL_ANSWER_PROMPT = """FORCEFINALANSWER:
 You have reached the maximum number of tool calls. Produce the best final answer using only the collected context.
