@@ -33,7 +33,7 @@ def parse_rewrite_response(text: str, fallback: str) -> str:
 def _reference_summary(state: ConversationState, limit: int = 12) -> str:
     references = list(state.references.values())[-limit:]
     if not references:
-        return "No Reference IDs yet."
+        return ""
 
     lines = []
     for reference in references:
@@ -49,7 +49,7 @@ def _history_summary(state: ConversationState, limit: int) -> str:
         if message.get("role") != "tool" and message.get("content") is not None
     ][-limit:]
     if not messages:
-        return "No prior conversation."
+        return ""
 
     lines = []
     for message in messages:

@@ -53,6 +53,21 @@ def test_build_rewrite_messages_includes_prompt_history_question_and_references(
     assert "docs/design.md" in user_message
 
 
+def test_build_rewrite_messages_omits_empty_summary_placeholders():
+    state = ConversationState(user_query="initial question")
+    state.messages.clear()
+
+    messages = build_rewrite_messages(state, "current question")
+    user_message = messages[1]["content"]
+
+    assert "Recent conversation:" in user_message
+    assert "Available Reference IDs:" in user_message
+    assert "Current user question:" in user_message
+    assert "current question" in user_message
+    assert "No prior conversation." not in user_message
+    assert "No Reference IDs yet." not in user_message
+
+
 def test_rewrite_query_calls_complete_with_messages_keyword_and_returns_parsed_query():
     class FakeLLMClient:
         def __init__(self):
