@@ -131,3 +131,89 @@ def run_agentic_loop(
 
     state.add_message("system", FORCE_FINAL_ANSWER_PROMPT)
     yield from llm_client.stream(state.messages)
+
+
+def run_ask(query: str) -> int:
+    from agenticrag.config import load_config
+    from agenticrag.embeddings import SiliconFlowEmbeddingClient
+    from agenticrag.llm import DeepSeekClient
+    from agenticrag.retriever import ChromaRetriever
+    from agenticrag.state import ConversationState
+    from agenticrag.switcher import classify_query
+    from agenticrag.tools.retrieval import RetrievalTools
+
+    config = load_config()
+    llm_client = DeepSeekClient(
+        api_key=config.deepseek_api_key,
+        base_url=config.deepseek_base_url,
+        model=config.deepseek_model,
+    )
+    embedding_client = SiliconFlowEmbeddingClient(
+        api_key=config.siliconflow_api_key,
+        base_url=config.siliconflow_base_url,
+        model=config.siliconflow_embedding_model,
+    )
+    retriever = ChromaRetriever(config.chroma_dir, embedding_client)
+    state = ConversationState(user_query=query)
+    tools = RetrievalTools(
+        retriever=retriever,
+        state=state,
+        source_cache_dir=config.source_cache_dir,
+    )
+
+    route = classify_query(llm_client, query)
+    if route == "simple":
+        context = tools.search([query])
+        for chunk in stream_simple_rag(llm_client, query, context):
+            print(chunk, end="", flush=True)
+        print()
+        return 0
+
+    def execute_tool(name: str, arguments: dict[str, Any]) -> str:
+        if "_error" in arguments:
+            return f"[tool error] {name}: {arguments['_error']}"
+
+        try:
+            if name == "search":
+                queries = arguments.get("queries")
+                if not isinstance(queries, list):
+                    return "[tool error] search: queries must be a list"
+                return tools.search(queries)
+            if name == "find":
+                reference_id = arguments.get("reference_id")
+                patterns = arguments.get("patterns")
+                if not isinstance(reference_id, str):
+                    return "[tool error] find: reference_id must be a string"
+                if not isinstance(patterns, list):
+                    return "[tool error] find: patterns must be a list"
+                return tools.find(reference_id, patterns)
+            if name == "open":
+                reference_id = arguments.get("reference_id")
+                line_number = arguments.get("line_number", 0)
+                if not isinstance(reference_id, str):
+                    return "[tool error] open: reference_id must be a string"
+                if not isinstance(line_number, int):
+                    return "[tool error] open: line_number must be an integer"
+                return tools.open(reference_id, line_number=line_number)
+            if name == "summarize":
+                candidate_reference_ids = arguments.get("candidate_reference_ids")
+                if not isinstance(candidate_reference_ids, list):
+                    return "[tool error] summarize: candidate_reference_ids must be a list"
+                return tools.summarize(candidate_reference_ids)
+        except Exception as exc:
+            return f"[tool error] {name}: {exc}"
+
+        return f"[tool error] {name}: unknown tool"
+
+    for chunk in run_agentic_loop(
+        llm_client,
+        state,
+        execute_tool,
+        max_calls=config.max_calls,
+        token_threshold=config.token_threshold,
+        token_warning_ratio=config.token_warning_ratio,
+        status_writer=lambda text: print(text, flush=True),
+    ):
+        print(chunk, end="", flush=True)
+    print()
+    return 0
