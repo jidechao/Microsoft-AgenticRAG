@@ -5,6 +5,7 @@ from agenticrag.loop import should_force_completion
 from agenticrag.loop import stream_simple_rag
 from agenticrag.prompts import FORCE_FINAL_ANSWER_PROMPT
 from agenticrag.prompts import SIMPLE_RAG_PROMPT
+from agenticrag.prompts import SYSTEM_PROMPT
 from agenticrag.state import ConversationState
 from agenticrag.tools import TOOL_SCHEMAS
 
@@ -156,3 +157,179 @@ def test_run_agentic_loop_summarizes_when_token_threshold_is_reached():
     )
 
     assert tool_calls == [("summarize", {"candidate_reference_ids": ["ref-1"]})]
+
+
+def test_run_agentic_loop_inserts_system_prompt_once_at_beginning_across_runs():
+    llm = FakeLLM(
+        responses=[
+            message_response(content="first"),
+            message_response(content="second"),
+        ]
+    )
+    state = ConversationState(user_query="question")
+
+    first = list(
+        run_agentic_loop(
+            llm,
+            state,
+            lambda name, arguments: "",
+            max_calls=1,
+            token_threshold=10_000,
+            token_warning_ratio=0.8,
+            status_writer=lambda status: None,
+        )
+    )
+    second = list(
+        run_agentic_loop(
+            llm,
+            state,
+            lambda name, arguments: "",
+            max_calls=1,
+            token_threshold=10_000,
+            token_warning_ratio=0.8,
+            status_writer=lambda status: None,
+        )
+    )
+
+    system_prompts = [
+        message
+        for message in state.messages
+        if message.get("role") == "system" and message.get("content") == SYSTEM_PROMPT
+    ]
+    assert first == ["first"]
+    assert second == ["second"]
+    assert len(system_prompts) == 1
+    assert state.messages[0] == {"role": "system", "content": SYSTEM_PROMPT}
+
+
+def test_run_agentic_loop_handles_dict_shaped_tool_calls():
+    llm = FakeLLM(
+        responses=[
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "dict-call",
+                                    "function": {
+                                        "name": "find",
+                                        "arguments": '{"reference_id": "ref", "patterns": ["a"]}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"message": {"content": "done", "tool_calls": None}}]},
+        ]
+    )
+    state = ConversationState(user_query="question")
+    tool_calls = []
+
+    chunks = list(
+        run_agentic_loop(
+            llm,
+            state,
+            lambda name, arguments: tool_calls.append((name, arguments)) or "found",
+            max_calls=2,
+            token_threshold=10_000,
+            token_warning_ratio=0.8,
+            status_writer=lambda status: None,
+        )
+    )
+
+    assert chunks == ["done"]
+    assert tool_calls == [("find", {"reference_id": "ref", "patterns": ["a"]})]
+    assert state.messages[-1] == {
+        "role": "tool",
+        "content": "found",
+        "tool_call_id": "dict-call",
+        "name": "find",
+    }
+
+
+def test_run_agentic_loop_passes_error_dict_for_invalid_tool_arguments():
+    invalid_arguments = [
+        ("invalid-json", "{"),
+        ("none", None),
+        ("empty", ""),
+        ("array", '["not", "object"]'),
+        ("scalar", "42"),
+    ]
+    responses = [
+        message_response(
+            tool_calls=[
+                tool_call(call_id, "search", arguments)
+                for call_id, arguments in invalid_arguments
+            ]
+        ),
+        message_response(content="done"),
+    ]
+    llm = FakeLLM(responses=responses)
+    state = ConversationState(user_query="question")
+    tool_calls = []
+
+    chunks = list(
+        run_agentic_loop(
+            llm,
+            state,
+            lambda name, arguments: tool_calls.append((name, arguments)) or "tool result",
+            max_calls=2,
+            token_threshold=10_000,
+            token_warning_ratio=0.8,
+            status_writer=lambda status: None,
+        )
+    )
+
+    assert chunks == ["done"]
+    assert tool_calls == [
+        ("search", {"_error": "invalid tool arguments"}),
+        ("search", {"_error": "invalid tool arguments"}),
+        ("search", {"_error": "invalid tool arguments"}),
+        ("search", {"_error": "tool arguments must be a JSON object"}),
+        ("search", {"_error": "tool arguments must be a JSON object"}),
+    ]
+
+
+def test_run_agentic_loop_compresses_state_when_token_threshold_is_reached():
+    llm = FakeLLM(responses=[message_response(content="done")])
+    state = ConversationState(user_query="question")
+    state.references["keep"] = SimpleNamespace()
+    state.add_tool_result(
+        "search",
+        "retained full result content",
+        metadata={"reference_ids": ["keep"]},
+    )
+    state.add_tool_result(
+        "search",
+        "unrelated full result content",
+        metadata={"reference_ids": ["drop"]},
+    )
+    tool_calls = []
+
+    chunks = list(
+        run_agentic_loop(
+            llm,
+            state,
+            lambda name, arguments: tool_calls.append((name, arguments)) or "summary",
+            max_calls=1,
+            token_threshold=0,
+            token_warning_ratio=0.8,
+            status_writer=lambda status: None,
+        )
+    )
+
+    tool_messages = [message for message in state.messages if message["role"] == "tool"]
+    assert chunks == ["done"]
+    assert state.tool_results[0].content == "retained full result content"
+    assert state.tool_results[1].content == (
+        "[compressed search result unrelated to retained references]"
+    )
+    assert [message["content"] for message in tool_messages] == [
+        "retained full result content",
+        "[compressed search result unrelated to retained references]",
+    ]
+    assert tool_calls == [("summarize", {"candidate_reference_ids": ["keep"]})]
