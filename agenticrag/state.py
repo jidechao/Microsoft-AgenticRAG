@@ -35,6 +35,7 @@ class ConversationState:
                 chunk=chunk,
             )
             reference_ids.append(reference_id)
+        self.turn_index += 1
         return reference_ids
 
     def get_reference(self, reference_id: str) -> Reference:
@@ -75,17 +76,20 @@ class ConversationState:
     def summarize(self, candidate_reference_ids: list[str]) -> None:
         retained = set(candidate_reference_ids)
         for tool_result in self.tool_results:
-            reference_ids = set(tool_result.metadata.get("reference_ids", []))
-            if reference_ids and reference_ids.isdisjoint(retained):
+            reference_ids = tool_result.metadata.get("reference_ids")
+            reference_set = set(reference_ids or [])
+            if not reference_set or reference_set.isdisjoint(retained):
                 tool_result.content = (
                     f"[compressed {tool_result.name} result unrelated to retained references]"
                 )
 
-        non_tool_messages = [
-            message for message in self.messages if message.get("role") != "tool"
-        ]
-        self.messages = non_tool_messages
-        for tool_result in self.tool_results:
-            self.messages.append(
-                {"role": "tool", "name": tool_result.name, "content": tool_result.content}
-            )
+        tool_index = 0
+        for message in self.messages:
+            if message.get("role") != "tool":
+                continue
+            if tool_index >= len(self.tool_results):
+                break
+            tool_result = self.tool_results[tool_index]
+            message["name"] = tool_result.name
+            message["content"] = tool_result.content
+            tool_index += 1
