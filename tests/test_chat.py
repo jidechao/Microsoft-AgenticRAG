@@ -12,6 +12,35 @@ from agenticrag.prompts import SYSTEM_PROMPT
 from agenticrag.state import ConversationState
 
 
+def test_run_chat_handles_help_reset_and_exit(monkeypatch, capsys):
+    from agenticrag import chat
+
+    class FakeSession:
+        def __init__(self):
+            self.reset_count = 0
+
+        def answer_turn(self, user_input, status_writer=None):
+            yield f"answer:{user_input}"
+
+        def reset(self):
+            self.reset_count += 1
+
+    fake_session = FakeSession()
+    inputs = iter(["/help", "", "hello", "/reset", "/exit"])
+
+    monkeypatch.setattr(chat, "create_chat_session", lambda: fake_session)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    assert chat.run_chat() == 0
+
+    captured = capsys.readouterr()
+    assert "AgenticRAG chat" in captured.out
+    assert "/reset" in captured.out
+    assert "answer:hello" in captured.out
+    assert "Session reset." in captured.out
+    assert fake_session.reset_count == 1
+
+
 def test_parse_rewrite_response_extracts_fenced_json():
     response = '```json\n{"query": "explain module two"}\n```'
 

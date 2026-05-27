@@ -11,6 +11,12 @@ from agenticrag.switcher import classify_query
 
 Message = dict[str, str]
 
+CHAT_HELP = """Commands:
+/help  Show this help.
+/reset Reset the conversation session.
+/exit  Exit chat.
+/quit  Exit chat."""
+
 
 class SupportsComplete(Protocol):
     def complete(self, *, messages: list[Message]) -> str: ...
@@ -227,3 +233,73 @@ class ChatSession:
     def _attach_tools_state(self) -> None:
         if hasattr(self.tools, "state"):
             self.tools.state = self.state
+
+
+def create_chat_session() -> ChatSession:
+    from agenticrag.config import load_config
+    from agenticrag.embeddings import SiliconFlowEmbeddingClient
+    from agenticrag.llm import DeepSeekClient
+    from agenticrag.retriever import ChromaRetriever
+    from agenticrag.tools.retrieval import RetrievalTools
+
+    config = load_config()
+    llm_client = DeepSeekClient(
+        api_key=config.deepseek_api_key,
+        base_url=config.deepseek_base_url,
+        model=config.deepseek_model,
+    )
+    embedding_client = SiliconFlowEmbeddingClient(
+        api_key=config.siliconflow_api_key,
+        base_url=config.siliconflow_base_url,
+        model=config.siliconflow_embedding_model,
+    )
+    retriever = ChromaRetriever(config.chroma_dir, embedding_client)
+    state = ConversationState(user_query="")
+    tools = RetrievalTools(
+        retriever=retriever,
+        state=state,
+        source_cache_dir=config.source_cache_dir,
+    )
+    session = ChatSession(
+        llm_client=llm_client,
+        tools=tools,
+        max_calls=config.max_calls,
+        token_threshold=config.token_threshold,
+        token_warning_ratio=config.token_warning_ratio,
+    )
+    tools.state = session.state
+    return session
+
+
+def run_chat() -> int:
+    session = create_chat_session()
+    print("AgenticRAG chat. Type /help for commands, /exit to quit.")
+
+    while True:
+        try:
+            user_input = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+
+        if not user_input:
+            continue
+        if user_input in {"/exit", "/quit"}:
+            return 0
+        if user_input == "/help":
+            print(CHAT_HELP)
+            continue
+        if user_input == "/reset":
+            session.reset()
+            print("Session reset.")
+            continue
+
+        try:
+            for chunk in session.answer_turn(
+                user_input,
+                status_writer=lambda text: print(text, flush=True),
+            ):
+                print(chunk, end="", flush=True)
+            print()
+        except Exception as exc:
+            print(f"[error] {exc}")

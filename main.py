@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("index")
     ask_parser = subparsers.add_parser("ask")
     ask_parser.add_argument("query")
+    subparsers.add_parser("chat")
 
     return parser
 
@@ -70,6 +71,10 @@ def main(argv: list[str] | None = None) -> int:
                 print("ask command is not implemented yet", file=sys.stderr)
                 return 1
             return run_ask(args.query)
+        if args.command == "chat":
+            from agenticrag import chat as chat_module
+
+            return chat_module.run_chat()
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2

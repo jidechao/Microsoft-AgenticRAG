@@ -20,6 +20,14 @@ def test_build_parser_parses_index_and_ask_commands():
     assert ask_args.query == query
 
 
+def test_build_parser_parses_chat_command():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["chat"])
+
+    assert args.command == "chat"
+
+
 def test_main_dispatches_ask(monkeypatch):
     query = "\u4ec0\u4e48\u662fAgenticRAG\uff1f"
     calls = []
@@ -32,6 +40,19 @@ def test_main_dispatches_ask(monkeypatch):
 
     assert cli.main(["ask", query]) == 0
     assert calls == [query]
+
+
+def test_main_dispatches_chat(monkeypatch):
+    calls = []
+
+    def fake_run_chat():
+        calls.append("chat")
+        return 0
+
+    monkeypatch.setattr("agenticrag.chat.run_chat", fake_run_chat)
+
+    assert cli.main(["chat"]) == 0
+    assert calls == ["chat"]
 
 
 def test_main_configures_stdio_before_dispatch(monkeypatch):
