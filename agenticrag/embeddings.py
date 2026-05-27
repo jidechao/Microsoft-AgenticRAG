@@ -14,6 +14,8 @@ class EmbeddingClient(Protocol):
 
 class FakeEmbeddingClient:
     def __init__(self, dims: int = 16) -> None:
+        if dims <= 0:
+            raise ValueError("dims must be greater than 0")
         self.dims = dims
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
@@ -39,4 +41,11 @@ class SiliconFlowEmbeddingClient:
         if not texts:
             return []
         response = self.client.embeddings.create(model=self.model, input=texts)
-        return [item.embedding for item in response.data]
+        data = list(response.data)
+        if data and all(hasattr(item, "index") for item in data):
+            data.sort(key=lambda item: item.index)
+        if len(data) != len(texts):
+            raise ValueError(
+                f"Expected {len(texts)} embeddings, received {len(data)} embeddings"
+            )
+        return [item.embedding for item in data]
