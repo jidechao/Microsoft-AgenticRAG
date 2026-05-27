@@ -12,6 +12,10 @@ def test_chunk_text_respects_size_and_overlap():
     assert len(chunks) > 1
     assert all(len(chunk) <= 110 for chunk in chunks)
     assert all(len(chunk) >= 20 for chunk in chunks)
+    assert any(
+        0 <= next_chunk.find(previous[-10:]) <= 10
+        for previous, next_chunk in zip(chunks, chunks[1:])
+    )
 
 
 def test_parse_markdown_uses_heading_title_and_lines(tmp_path):
