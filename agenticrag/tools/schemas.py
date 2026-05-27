@@ -14,7 +14,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "properties": {
                     "queries": {
                         "type": "array",
-                        "items": {"type": "string"},
+                        "items": {"type": "string", "minLength": 1},
                         "minItems": 1,
                         "maxItems": 5,
                         "description": "Search queries to run against the retriever.",
@@ -35,12 +35,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "properties": {
                     "reference_id": {
                         "type": "string",
+                        "minLength": 1,
                         "description": "Reference id returned by search.",
                     },
                     "patterns": {
                         "type": "array",
-                        "items": {"type": "string"},
+                        "items": {"type": "string", "minLength": 1},
                         "minItems": 1,
+                        "maxItems": 10,
                         "description": "Literal substrings to search for.",
                     },
                 },
@@ -59,6 +61,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "properties": {
                     "reference_id": {
                         "type": "string",
+                        "minLength": 1,
                         "description": "Reference id returned by search.",
                     },
                     "line_number": {
@@ -83,7 +86,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "properties": {
                     "candidate_reference_ids": {
                         "type": "array",
-                        "items": {"type": "string"},
+                        "items": {"type": "string", "minLength": 1},
+                        "maxItems": 20,
                         "description": "Reference ids that should remain available in full detail.",
                     }
                 },
