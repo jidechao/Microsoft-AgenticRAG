@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from agenticrag.chat import (
     ChatSession,
     build_rewrite_messages,
@@ -235,6 +237,81 @@ def test_chat_session_simple_route_rewrites_searches_streams_and_records_state(m
         {"role": "assistant", "content": "chunk one chunk two"},
     ]
     assert "turn0search0" in session.state.references
+
+
+def test_chat_session_failed_turn_rolls_back_messages_before_next_rewrite(monkeypatch):
+    captured_rewrite_histories = []
+
+    class FakeLLMClient:
+        pass
+
+    class FakeTools:
+        def __init__(self):
+            self.state = None
+
+        def search(self, queries):
+            return "context"
+
+    def fake_rewrite(llm_client, state, user_input):
+        captured_rewrite_histories.append(
+            [dict(message) for message in state.messages]
+        )
+        return user_input
+
+    def fake_stream_simple(llm_client, raw_query, rewritten_query, search_context):
+        if raw_query == "failed turn":
+            raise RuntimeError("stream failed")
+        yield "ok"
+
+    monkeypatch.setattr("agenticrag.chat.rewrite_query", fake_rewrite)
+    monkeypatch.setattr("agenticrag.chat.classify_query", lambda llm, query: "simple")
+    monkeypatch.setattr("agenticrag.chat.stream_simple_chat", fake_stream_simple)
+
+    tools = FakeTools()
+    session = ChatSession(
+        llm_client=FakeLLMClient(),
+        tools=tools,
+        max_calls=3,
+        token_threshold=10000,
+        token_warning_ratio=0.8,
+    )
+    session.state.add_message("user", "previous question")
+    session.state.add_message("assistant", "previous answer")
+    session.state.references["turn0search0"] = Reference(
+        reference_id="turn0search0",
+        chunk=DocumentChunk(
+            doc_id="doc-1",
+            path=Path("docs/design.md"),
+            title="AgenticRAG design",
+            filetype="markdown",
+            chunk_index=0,
+            line_start=0,
+            line_end=10,
+            content="Previous context.",
+        ),
+    )
+    session.state.add_tool_result(
+        "search",
+        "previous result",
+        metadata={"reference_ids": ["turn0search0"]},
+    )
+    pre_failure_messages = [dict(message) for message in session.state.messages]
+
+    with pytest.raises(RuntimeError, match="stream failed"):
+        list(session.answer_turn("failed turn"))
+
+    assert session.state.messages == pre_failure_messages
+    assert "turn0search0" in session.state.references
+    assert [tool_result.name for tool_result in session.state.tool_results] == ["search"]
+
+    assert list(session.answer_turn("next turn")) == ["ok"]
+
+    next_history = captured_rewrite_histories[-1]
+    next_history_text = "\n".join(str(message.get("content")) for message in next_history)
+    assert "previous question" in next_history_text
+    assert "previous answer" in next_history_text
+    assert "next turn" in next_history_text
+    assert "failed turn" not in next_history_text
 
 
 def test_chat_session_complex_route_streams_status_and_records_answer(monkeypatch):

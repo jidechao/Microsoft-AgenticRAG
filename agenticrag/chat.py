@@ -170,58 +170,65 @@ class ChatSession:
         status_writer: Any | None = None,
     ) -> Iterator[str]:
         writer = status_writer or (lambda text: None)
-        self.state.add_message("user", user_input)
-        rewritten_query = rewrite_query(self.llm_client, self.state, user_input)
+        pre_turn_messages = [dict(message) for message in self.state.messages]
         try:
-            route = classify_query(self.llm_client, rewritten_query)
-        except Exception:
-            route = "complex"
+            self.state.add_message("user", user_input)
+            rewritten_query = rewrite_query(self.llm_client, self.state, user_input)
+            try:
+                route = classify_query(self.llm_client, rewritten_query)
+            except Exception:
+                route = "complex"
 
-        if route == "simple":
-            search_context = self.tools.search([rewritten_query])
-            chunks: list[str] = []
-            for chunk in stream_simple_chat(
-                self.llm_client,
-                user_input,
-                rewritten_query,
-                search_context,
-            ):
-                chunks.append(chunk)
-                yield chunk
+            if route == "simple":
+                search_context = self.tools.search([rewritten_query])
+                chunks: list[str] = []
+                for chunk in stream_simple_chat(
+                    self.llm_client,
+                    user_input,
+                    rewritten_query,
+                    search_context,
+                ):
+                    chunks.append(chunk)
+                    yield chunk
+                self.state.add_message("assistant", "".join(chunks))
+                return
+
+            self.state.messages[-1]["content"] = "\n".join(
+                [
+                    f"Raw user question: {user_input}",
+                    f"Rewritten self-contained question: {rewritten_query}",
+                ]
+            )
+            chat_visible_messages = [dict(message) for message in self.state.messages]
+            chunks = []
+            completed = False
+            try:
+                for chunk in run_agentic_loop(
+                    self.llm_client,
+                    self.state,
+                    lambda name, arguments: execute_retrieval_tool(
+                        self.tools,
+                        name,
+                        arguments,
+                    ),
+                    max_calls=self.max_calls,
+                    token_threshold=self.token_threshold,
+                    token_warning_ratio=self.token_warning_ratio,
+                    status_writer=writer,
+                ):
+                    chunks.append(chunk)
+                    yield chunk
+                completed = True
+            finally:
+                self.state.messages = [
+                    dict(message) for message in chat_visible_messages
+                ]
+            if not completed:
+                return
             self.state.add_message("assistant", "".join(chunks))
-            return
-
-        self.state.messages[-1]["content"] = "\n".join(
-            [
-                f"Raw user question: {user_input}",
-                f"Rewritten self-contained question: {rewritten_query}",
-            ]
-        )
-        chat_visible_messages = [dict(message) for message in self.state.messages]
-        chunks = []
-        completed = False
-        try:
-            for chunk in run_agentic_loop(
-                self.llm_client,
-                self.state,
-                lambda name, arguments: execute_retrieval_tool(
-                    self.tools,
-                    name,
-                    arguments,
-                ),
-                max_calls=self.max_calls,
-                token_threshold=self.token_threshold,
-                token_warning_ratio=self.token_warning_ratio,
-                status_writer=writer,
-            ):
-                chunks.append(chunk)
-                yield chunk
-            completed = True
-        finally:
-            self.state.messages = [dict(message) for message in chat_visible_messages]
-        if not completed:
-            return
-        self.state.add_message("assistant", "".join(chunks))
+        except Exception:
+            self.state.messages = [dict(message) for message in pre_turn_messages]
+            raise
 
     @staticmethod
     def _new_state() -> ConversationState:
