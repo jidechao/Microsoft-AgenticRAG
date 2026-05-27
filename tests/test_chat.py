@@ -2,8 +2,27 @@ from pathlib import Path
 
 from agenticrag.chat import build_rewrite_messages, parse_rewrite_response, rewrite_query
 from agenticrag.models import DocumentChunk, Reference
-from agenticrag.prompts import QUERY_REWRITE_PROMPT
+from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
 from agenticrag.state import ConversationState
+
+
+def test_rewrite_query_falls_back_when_complete_raises():
+    class FakeLLMClient:
+        def complete(self, *, messages):
+            raise RuntimeError("llm unavailable")
+
+    state = ConversationState(user_query="initial question")
+
+    assert rewrite_query(FakeLLMClient(), state, "original user input") == "original user input"
+
+
+def test_chat_simple_rag_prompt_covers_required_behavior():
+    assert "原始用户问题" in CHAT_SIMPLE_RAG_PROMPT
+    assert "改写后的自包含问题" in CHAT_SIMPLE_RAG_PROMPT
+    assert "检索结果" in CHAT_SIMPLE_RAG_PROMPT
+    assert "Reference ID" in CHAT_SIMPLE_RAG_PROMPT
+    assert "引用" in CHAT_SIMPLE_RAG_PROMPT
+    assert "证据不足" in CHAT_SIMPLE_RAG_PROMPT
 
 
 def test_parse_rewrite_response_extracts_query():
