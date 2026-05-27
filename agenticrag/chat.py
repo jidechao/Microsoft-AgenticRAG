@@ -173,6 +173,12 @@ def _restore_state(state: ConversationState, snapshot: dict[str, Any]) -> None:
     state.warned_about_tokens = snapshot["warned_about_tokens"]
 
 
+def _remove_tool_messages(state: ConversationState) -> None:
+    state.messages = [
+        dict(message) for message in state.messages if message.get("role") != "tool"
+    ]
+
+
 class ChatSession:
     def __init__(
         self,
@@ -201,6 +207,7 @@ class ChatSession:
         status_writer: Any | None = None,
     ) -> Iterator[str]:
         writer = status_writer or (lambda text: None)
+        _remove_tool_messages(self.state)
         pre_turn_state = _snapshot_state(self.state)
         try:
             self.state.add_message("user", user_input)
@@ -212,6 +219,7 @@ class ChatSession:
 
             if route == "simple":
                 search_context = self.tools.search([rewritten_query])
+                _remove_tool_messages(self.state)
                 chunks: list[str] = []
                 for chunk in stream_simple_chat(
                     self.llm_client,
@@ -230,6 +238,7 @@ class ChatSession:
                     f"Rewritten self-contained question: {rewritten_query}",
                 ]
             )
+            _remove_tool_messages(self.state)
             chat_visible_messages = [dict(message) for message in self.state.messages]
             chunks = []
             completed = False

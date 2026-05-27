@@ -315,7 +315,11 @@ def test_chat_session_failed_turn_rolls_back_messages_before_next_rewrite(monkey
         metadata={"reference_ids": ["turn0search0"]},
     )
     session.state.turn_index = 1
-    pre_failure_messages = [dict(message) for message in session.state.messages]
+    pre_failure_messages = [
+        dict(message)
+        for message in session.state.messages
+        if message.get("role") != "tool"
+    ]
 
     with pytest.raises(RuntimeError, match="stream failed"):
         list(session.answer_turn("failed turn"))
@@ -533,6 +537,88 @@ def test_chat_session_complex_route_removes_internal_loop_messages_and_keeps_ref
     )
     assert "turn0search0" in session.state.references
     assert [tool_result.name for tool_result in session.state.tool_results] == ["search"]
+
+
+def test_chat_session_simple_then_complex_drops_stale_tool_messages(monkeypatch):
+    routes = iter(["simple", "complex"])
+    captured_complex_messages = []
+
+    class FakeLLMClient:
+        pass
+
+    class FakeTools:
+        def __init__(self):
+            self.state = None
+
+        def search(self, queries):
+            reference_id = f"turn{self.state.turn_index}search0"
+            self.state.references[reference_id] = Reference(
+                reference_id=reference_id,
+                chunk=DocumentChunk(
+                    doc_id=f"doc-{self.state.turn_index}",
+                    path=Path("docs/design.md"),
+                    title="AgenticRAG design",
+                    filetype="markdown",
+                    chunk_index=self.state.turn_index,
+                    line_start=0,
+                    line_end=10,
+                    content=f"Context for {queries[0]}.",
+                ),
+            )
+            self.state.add_tool_result(
+                "search",
+                f"[{reference_id}] context",
+                metadata={"reference_ids": [reference_id]},
+            )
+            self.state.turn_index += 1
+            return f"[{reference_id}] context"
+
+    def fake_stream_simple(llm_client, raw_query, rewritten_query, search_context):
+        yield "simple answer"
+
+    def fake_run_agentic_loop(
+        llm_client,
+        state,
+        tool_executor,
+        max_calls,
+        token_threshold,
+        token_warning_ratio,
+        status_writer,
+    ):
+        captured_complex_messages.extend(dict(message) for message in state.messages)
+        assert not any(message.get("role") == "tool" for message in state.messages)
+        assert "turn0search0" in state.references
+        assert [tool_result.name for tool_result in state.tool_results] == ["search"]
+        yield "complex answer"
+
+    monkeypatch.setattr("agenticrag.chat.rewrite_query", lambda llm, state, value: value)
+    monkeypatch.setattr("agenticrag.chat.classify_query", lambda llm, query: next(routes))
+    monkeypatch.setattr("agenticrag.chat.stream_simple_chat", fake_stream_simple)
+    monkeypatch.setattr("agenticrag.chat.run_agentic_loop", fake_run_agentic_loop)
+
+    tools = FakeTools()
+    session = ChatSession(
+        llm_client=FakeLLMClient(),
+        tools=tools,
+        max_calls=3,
+        token_threshold=10000,
+        token_warning_ratio=0.8,
+    )
+
+    assert list(session.answer_turn("first question")) == ["simple answer"]
+    assert "turn0search0" in session.state.references
+    assert [tool_result.name for tool_result in session.state.tool_results] == ["search"]
+    assert not any(message.get("role") == "tool" for message in session.state.messages)
+
+    assert list(session.answer_turn("follow-up question")) == ["complex answer"]
+
+    assert captured_complex_messages
+    assert not any(
+        message.get("role") == "tool" for message in captured_complex_messages
+    )
+    assert "turn0search0" in session.state.references
+    assert [tool_result.name for tool_result in session.state.tool_results] == ["search"]
+    assert not any(message.get("role") == "tool" for message in session.state.messages)
 
 
 def test_chat_session_reset_clears_state_refs_and_keeps_empty_fresh_history():
