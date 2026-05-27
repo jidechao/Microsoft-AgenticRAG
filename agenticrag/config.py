@@ -31,6 +31,17 @@ def _float_env(name: str, default: float) -> float:
         raise ConfigError(f"{name} must be a float") from exc
 
 
+def _str_env(name: str, default: str) -> str:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip()
+
+
+def _path_env(name: str, default: str) -> Path:
+    return Path(_str_env(name, default))
+
+
 @dataclass
 class Config:
     deepseek_api_key: str
@@ -49,9 +60,9 @@ class Config:
 
     def validate(self) -> "Config":
         missing = []
-        if not self.deepseek_api_key:
+        if not self.deepseek_api_key.strip():
             missing.append("DEEPSEEK_API_KEY")
-        if not self.siliconflow_api_key:
+        if not self.siliconflow_api_key.strip():
             missing.append("SILICONFLOW_API_KEY")
         if missing:
             raise ConfigError(f"Missing required environment variables: {', '.join(missing)}")
@@ -71,19 +82,19 @@ def load_config(load_dotenv_file: bool = True) -> Config:
         load_dotenv()
 
     config = Config(
-        deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
-        siliconflow_api_key=os.getenv("SILICONFLOW_API_KEY", ""),
-        deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-        siliconflow_base_url=os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"),
-        siliconflow_embedding_model=os.getenv(
+        deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", "").strip(),
+        siliconflow_api_key=os.getenv("SILICONFLOW_API_KEY", "").strip(),
+        deepseek_base_url=_str_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        deepseek_model=_str_env("DEEPSEEK_MODEL", "deepseek-chat"),
+        siliconflow_base_url=_str_env("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"),
+        siliconflow_embedding_model=_str_env(
             "SILICONFLOW_EMBEDDING_MODEL",
             "Qwen/Qwen3-Embedding-4B",
         ),
         embedding_dims=_int_env("EMBEDDING_DIMS", 1536),
-        docs_dir=Path(os.getenv("DOCS_DIR", "docs")),
-        chroma_dir=Path(os.getenv("CHROMA_DIR", ".chroma")),
-        source_cache_dir=Path(os.getenv("SOURCE_CACHE_DIR", ".agenticrag_cache")),
+        docs_dir=_path_env("DOCS_DIR", "docs"),
+        chroma_dir=_path_env("CHROMA_DIR", ".chroma"),
+        source_cache_dir=_path_env("SOURCE_CACHE_DIR", ".agenticrag_cache"),
         max_calls=_int_env("MAX_CALLS", 15),
         token_threshold=_int_env("TOKEN_THRESHOLD", 128000),
         token_warning_ratio=_float_env("TOKEN_WARNING_RATIO", 0.9),
