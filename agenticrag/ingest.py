@@ -176,6 +176,16 @@ def scan_documents(docs_dir: Path) -> list[Path]:
     )
 
 
+def parse_corpus(docs_dir: Path) -> list[DocumentChunk]:
+    chunks: list[DocumentChunk] = []
+    for path in scan_documents(docs_dir):
+        try:
+            chunks.extend(parse_document(path))
+        except Exception as exc:
+            print(f"[warn] failed to parse {path}: {exc}")
+    return chunks
+
+
 def parse_document(path: Path) -> list[DocumentChunk]:
     suffix = path.suffix.lower()
     if suffix == ".md":
