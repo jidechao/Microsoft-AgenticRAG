@@ -134,8 +134,10 @@ def parse_pdf(path: Path) -> list[DocumentChunk]:
     page_texts: list[str] = []
     with pdfplumber.open(path) as pdf:
         for page_number, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text() or ""
-            page_texts.append(f"[page {page_number}]\n{text}".strip())
+            text = (page.extract_text() or "").strip()
+            if not text:
+                continue
+            page_texts.append(f"[page {page_number}]\n{text}")
 
     full_text = "\n\n".join(page_text for page_text in page_texts if page_text).strip()
     if not full_text:
