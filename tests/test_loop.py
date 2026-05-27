@@ -1,0 +1,158 @@
+from types import SimpleNamespace
+
+from agenticrag.loop import run_agentic_loop
+from agenticrag.loop import should_force_completion
+from agenticrag.loop import stream_simple_rag
+from agenticrag.prompts import FORCE_FINAL_ANSWER_PROMPT
+from agenticrag.prompts import SIMPLE_RAG_PROMPT
+from agenticrag.state import ConversationState
+from agenticrag.tools import TOOL_SCHEMAS
+
+QUESTION_LABEL = "\u95ee\u9898\uff1a"
+SEARCH_RESULTS_LABEL = "\u68c0\u7d22\u7ed3\u679c\uff1a"
+
+
+class FakeLLM:
+    def __init__(self, responses=None, stream_chunks=None):
+        self.responses = list(responses or [])
+        self.stream_chunks = list(stream_chunks or [])
+        self.tool_call_calls = []
+        self.stream_calls = []
+
+    def tool_call(self, messages, tools):
+        self.tool_call_calls.append((messages, tools))
+        return self.responses.pop(0)
+
+    def stream(self, messages):
+        self.stream_calls.append(messages)
+        yield from self.stream_chunks
+
+
+def message_response(content="", tool_calls=None):
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=tool_calls,
+                ),
+            ),
+        ],
+    )
+
+
+def tool_call(call_id, name, arguments):
+    return SimpleNamespace(
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=arguments),
+    )
+
+
+def test_should_force_completion_at_max_calls():
+    assert should_force_completion(call_index=15, max_calls=15) is True
+    assert should_force_completion(call_index=14, max_calls=15) is False
+
+
+def test_stream_simple_rag_uses_prompt_and_chinese_labels():
+    llm = FakeLLM(stream_chunks=["answer"])
+
+    assert list(stream_simple_rag(llm, query="what is A?", search_context="chunk 1")) == [
+        "answer"
+    ]
+
+    messages = llm.stream_calls[0]
+    assert messages[0] == {"role": "system", "content": SIMPLE_RAG_PROMPT}
+    assert messages[1]["role"] == "user"
+    assert QUESTION_LABEL in messages[1]["content"]
+    assert SEARCH_RESULTS_LABEL in messages[1]["content"]
+    assert "what is A?" in messages[1]["content"]
+    assert "chunk 1" in messages[1]["content"]
+
+
+def test_run_agentic_loop_executes_tool_and_returns_final_answer():
+    tool = tool_call("call-1", "search", '{"queries": ["alpha"]}')
+    llm = FakeLLM(
+        responses=[
+            message_response(tool_calls=[tool]),
+            message_response(content="final answer"),
+        ]
+    )
+    state = ConversationState(user_query="question")
+    statuses = []
+    tool_calls = []
+
+    def execute(name, arguments):
+        tool_calls.append((name, arguments))
+        return "tool result"
+
+    chunks = list(
+        run_agentic_loop(
+            llm,
+            state,
+            execute,
+            max_calls=3,
+            token_threshold=10_000,
+            token_warning_ratio=0.8,
+            status_writer=statuses.append,
+        )
+    )
+
+    assert chunks == ["final answer"]
+    assert llm.tool_call_calls[0][1] == TOOL_SCHEMAS
+    assert statuses == ["[tool] search"]
+    assert tool_calls == [("search", {"queries": ["alpha"]})]
+    assert state.messages[-1] == {
+        "role": "tool",
+        "content": "tool result",
+        "tool_call_id": "call-1",
+        "name": "search",
+    }
+
+
+def test_run_agentic_loop_forces_final_answer_after_max_calls():
+    tool = tool_call("call-1", "search", '{"queries": ["alpha"]}')
+    llm = FakeLLM(
+        responses=[message_response(tool_calls=[tool])],
+        stream_chunks=["forced", " answer"],
+    )
+    state = ConversationState(user_query="question")
+
+    chunks = list(
+        run_agentic_loop(
+            llm,
+            state,
+            lambda name, arguments: "tool result",
+            max_calls=1,
+            token_threshold=10_000,
+            token_warning_ratio=0.8,
+            status_writer=lambda status: None,
+        )
+    )
+
+    assert chunks == ["forced", " answer"]
+    assert state.messages[-1] == {
+        "role": "system",
+        "content": FORCE_FINAL_ANSWER_PROMPT,
+    }
+    assert llm.stream_calls[0] is state.messages
+
+
+def test_run_agentic_loop_summarizes_when_token_threshold_is_reached():
+    llm = FakeLLM(responses=[message_response(content="done")])
+    state = ConversationState(user_query="question")
+    state.references["ref-1"] = SimpleNamespace()
+    tool_calls = []
+
+    list(
+        run_agentic_loop(
+            llm,
+            state,
+            lambda name, arguments: tool_calls.append((name, arguments)) or "summary",
+            max_calls=1,
+            token_threshold=0,
+            token_warning_ratio=0.8,
+            status_writer=lambda status: None,
+        )
+    )
+
+    assert tool_calls == [("summarize", {"candidate_reference_ids": ["ref-1"]})]
