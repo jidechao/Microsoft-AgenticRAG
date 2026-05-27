@@ -112,6 +112,43 @@ def _attach_tool_call_id_to_new_tool_message(
     return False
 
 
+def execute_retrieval_tool(tools: Any, name: str, arguments: dict[str, Any]) -> str:
+    if "_error" in arguments:
+        return f"[tool error] {name}: {arguments['_error']}"
+
+    try:
+        if name == "search":
+            queries = arguments.get("queries")
+            if not isinstance(queries, list):
+                return "[tool error] search: queries must be a list"
+            return tools.search(queries)
+        if name == "find":
+            reference_id = arguments.get("reference_id")
+            patterns = arguments.get("patterns")
+            if not isinstance(reference_id, str):
+                return "[tool error] find: reference_id must be a string"
+            if not isinstance(patterns, list):
+                return "[tool error] find: patterns must be a list"
+            return tools.find(reference_id, patterns)
+        if name == "open":
+            reference_id = arguments.get("reference_id")
+            line_number = arguments.get("line_number", 0)
+            if not isinstance(reference_id, str):
+                return "[tool error] open: reference_id must be a string"
+            if not isinstance(line_number, int):
+                return "[tool error] open: line_number must be an integer"
+            return tools.open(reference_id, line_number=line_number)
+        if name == "summarize":
+            candidate_reference_ids = arguments.get("candidate_reference_ids")
+            if not isinstance(candidate_reference_ids, list):
+                return "[tool error] summarize: candidate_reference_ids must be a list"
+            return tools.summarize(candidate_reference_ids)
+    except Exception as exc:
+        return f"[tool error] {name}: {exc}"
+
+    return f"[tool error] {name}: unknown tool"
+
+
 def run_agentic_loop(
     llm_client: Any,
     state: ConversationState,
@@ -212,40 +249,7 @@ def run_ask(query: str) -> int:
         return 0
 
     def execute_tool(name: str, arguments: dict[str, Any]) -> str:
-        if "_error" in arguments:
-            return f"[tool error] {name}: {arguments['_error']}"
-
-        try:
-            if name == "search":
-                queries = arguments.get("queries")
-                if not isinstance(queries, list):
-                    return "[tool error] search: queries must be a list"
-                return tools.search(queries)
-            if name == "find":
-                reference_id = arguments.get("reference_id")
-                patterns = arguments.get("patterns")
-                if not isinstance(reference_id, str):
-                    return "[tool error] find: reference_id must be a string"
-                if not isinstance(patterns, list):
-                    return "[tool error] find: patterns must be a list"
-                return tools.find(reference_id, patterns)
-            if name == "open":
-                reference_id = arguments.get("reference_id")
-                line_number = arguments.get("line_number", 0)
-                if not isinstance(reference_id, str):
-                    return "[tool error] open: reference_id must be a string"
-                if not isinstance(line_number, int):
-                    return "[tool error] open: line_number must be an integer"
-                return tools.open(reference_id, line_number=line_number)
-            if name == "summarize":
-                candidate_reference_ids = arguments.get("candidate_reference_ids")
-                if not isinstance(candidate_reference_ids, list):
-                    return "[tool error] summarize: candidate_reference_ids must be a list"
-                return tools.summarize(candidate_reference_ids)
-        except Exception as exc:
-            return f"[tool error] {name}: {exc}"
-
-        return f"[tool error] {name}: unknown tool"
+        return execute_retrieval_tool(tools, name, arguments)
 
     for chunk in run_agentic_loop(
         llm_client,

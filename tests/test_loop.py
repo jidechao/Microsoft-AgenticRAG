@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from agenticrag.loop import execute_retrieval_tool
 from agenticrag.loop import run_agentic_loop
 from agenticrag.loop import should_force_completion
 from agenticrag.loop import stream_simple_rag
@@ -27,6 +28,27 @@ class FakeLLM:
     def stream(self, messages):
         self.stream_calls.append(messages)
         yield from self.stream_chunks
+
+
+class FakeRetrievalTools:
+    def __init__(self):
+        self.calls = []
+
+    def search(self, queries):
+        self.calls.append(("search", queries))
+        return "search result"
+
+    def find(self, reference_id, patterns):
+        self.calls.append(("find", reference_id, patterns))
+        return "find result"
+
+    def open(self, reference_id, *, line_number):
+        self.calls.append(("open", reference_id, line_number))
+        return "open result"
+
+    def summarize(self, candidate_reference_ids):
+        self.calls.append(("summarize", candidate_reference_ids))
+        return "summary result"
 
 
 def message_response(content="", tool_calls=None):
@@ -68,6 +90,86 @@ def test_stream_simple_rag_uses_prompt_and_chinese_labels():
     assert SEARCH_RESULTS_LABEL in messages[1]["content"]
     assert "what is A?" in messages[1]["content"]
     assert "chunk 1" in messages[1]["content"]
+
+
+def test_execute_retrieval_tool_dispatches_supported_tools():
+    tools = FakeRetrievalTools()
+
+    assert (
+        execute_retrieval_tool(tools, "search", {"queries": ["q"]})
+        == "search result"
+    )
+    assert execute_retrieval_tool(
+        tools,
+        "find",
+        {"reference_id": "turn0search0", "patterns": ["agent"]},
+    ) == "find result"
+    assert execute_retrieval_tool(
+        tools,
+        "open",
+        {"reference_id": "turn0search0", "line_number": 7},
+    ) == "open result"
+    assert execute_retrieval_tool(
+        tools,
+        "summarize",
+        {"candidate_reference_ids": ["turn0search0"]},
+    ) == "summary result"
+
+    assert tools.calls == [
+        ("search", ["q"]),
+        ("find", "turn0search0", ["agent"]),
+        ("open", "turn0search0", 7),
+        ("summarize", ["turn0search0"]),
+    ]
+
+
+def test_execute_retrieval_tool_returns_error_argument_message():
+    tools = FakeRetrievalTools()
+
+    assert execute_retrieval_tool(tools, "search", {"_error": "bad args"}) == (
+        "[tool error] search: bad args"
+    )
+    assert tools.calls == []
+
+
+def test_execute_retrieval_tool_returns_unknown_tool_error():
+    tools = FakeRetrievalTools()
+
+    assert execute_retrieval_tool(tools, "nope", {}) == (
+        "[tool error] nope: unknown tool"
+    )
+    assert tools.calls == []
+
+
+def test_execute_retrieval_tool_validates_argument_shapes():
+    tools = FakeRetrievalTools()
+
+    invalid_calls = [
+        ("search", {"queries": "q"}),
+        ("find", {"reference_id": 1, "patterns": ["agent"]}),
+        ("find", {"reference_id": "turn0search0", "patterns": "agent"}),
+        ("open", {"reference_id": 1, "line_number": 7}),
+        ("open", {"reference_id": "turn0search0", "line_number": "7"}),
+        ("summarize", {"candidate_reference_ids": "turn0search0"}),
+    ]
+
+    for name, arguments in invalid_calls:
+        assert execute_retrieval_tool(tools, name, arguments).startswith(
+            f"[tool error] {name}:"
+        )
+    assert tools.calls == []
+
+
+def test_execute_retrieval_tool_catches_tool_exceptions():
+    class FailingRetrievalTools(FakeRetrievalTools):
+        def search(self, queries):
+            raise RuntimeError("boom")
+
+    assert execute_retrieval_tool(
+        FailingRetrievalTools(),
+        "search",
+        {"queries": ["q"]},
+    ) == "[tool error] search: boom"
 
 
 def test_run_agentic_loop_executes_tool_and_returns_final_answer():
