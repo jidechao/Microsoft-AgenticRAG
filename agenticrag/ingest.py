@@ -128,6 +128,61 @@ def parse_markdown(path: Path) -> list[DocumentChunk]:
     return chunks
 
 
+def parse_pdf(path: Path) -> list[DocumentChunk]:
+    import pdfplumber
+
+    page_texts: list[str] = []
+    with pdfplumber.open(path) as pdf:
+        for page_number, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text() or ""
+            page_texts.append(f"[page {page_number}]\n{text}".strip())
+
+    full_text = "\n\n".join(page_text for page_text in page_texts if page_text).strip()
+    if not full_text:
+        return []
+
+    lines = normalize_lines(full_text)
+    doc_id = make_doc_id(path)
+    title = path.stem
+
+    chunks: list[DocumentChunk] = []
+    search_start = 0
+    for content in chunk_text(full_text):
+        line_start, line_end = _line_span_for_text(lines, content, search_start)
+        search_start = _advance_search_start(lines, content, line_end)
+        chunks.append(
+            DocumentChunk(
+                doc_id=doc_id,
+                path=path,
+                title=title,
+                filetype="pdf",
+                chunk_index=len(chunks),
+                line_start=line_start,
+                line_end=line_end,
+                content=content,
+            )
+        )
+    return chunks
+
+
+def scan_documents(docs_dir: Path) -> list[Path]:
+    supported_suffixes = {".md", ".pdf"}
+    return sorted(
+        path
+        for path in docs_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in supported_suffixes
+    )
+
+
+def parse_document(path: Path) -> list[DocumentChunk]:
+    suffix = path.suffix.lower()
+    if suffix == ".md":
+        return parse_markdown(path)
+    if suffix == ".pdf":
+        return parse_pdf(path)
+    return []
+
+
 def _split_markdown_sections(text: str) -> list[str]:
     sections: list[str] = []
     current: list[str] = []
