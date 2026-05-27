@@ -111,6 +111,11 @@ def test_execute_retrieval_tool_dispatches_supported_tools():
     ) == "open result"
     assert execute_retrieval_tool(
         tools,
+        "open",
+        {"reference_id": "turn0search0"},
+    ) == "open result"
+    assert execute_retrieval_tool(
+        tools,
         "summarize",
         {"candidate_reference_ids": ["turn0search0"]},
     ) == "summary result"
@@ -119,6 +124,7 @@ def test_execute_retrieval_tool_dispatches_supported_tools():
         ("search", ["q"]),
         ("find", "turn0search0", ["agent"]),
         ("open", "turn0search0", 7),
+        ("open", "turn0search0", 0),
         ("summarize", ["turn0search0"]),
     ]
 
@@ -143,12 +149,6 @@ def test_execute_retrieval_tool_returns_unknown_tool_error():
 
 def test_execute_retrieval_tool_validates_argument_shapes():
     tools = FakeRetrievalTools()
-
-    assert execute_retrieval_tool(
-        tools,
-        "open",
-        {"reference_id": "turn0search0"},
-    ) == "[tool error] open: line_number must be an integer"
 
     invalid_calls = [
         ("search", {"queries": "q"}),

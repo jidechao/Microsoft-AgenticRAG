@@ -261,11 +261,13 @@ def test_tool_schemas_include_exact_tool_names_and_tighter_constraints():
     ]
     search_queries = TOOL_SCHEMAS[0]["function"]["parameters"]["properties"]["queries"]
     find_patterns = TOOL_SCHEMAS[1]["function"]["parameters"]["properties"]["patterns"]
-    open_required = TOOL_SCHEMAS[2]["function"]["parameters"]["required"]
+    open_parameters = TOOL_SCHEMAS[2]["function"]["parameters"]
+    open_line_number = open_parameters["properties"]["line_number"]
     summarize_refs = TOOL_SCHEMAS[3]["function"]["parameters"]["properties"]["candidate_reference_ids"]
     assert search_queries["items"]["minLength"] == 1
     assert find_patterns["maxItems"] == 10
     assert find_patterns["items"]["minLength"] == 1
-    assert set(open_required) == {"reference_id", "line_number"}
+    assert open_parameters["required"] == ["reference_id"]
+    assert open_line_number["default"] == 0
     assert summarize_refs["maxItems"] == 20
     assert summarize_refs["items"]["minLength"] == 1
