@@ -132,11 +132,11 @@ def execute_retrieval_tool(tools: Any, name: str, arguments: dict[str, Any]) -> 
             return tools.find(reference_id, patterns)
         if name == "open":
             reference_id = arguments.get("reference_id")
-            line_number = arguments.get("line_number", 0)
+            line_number = arguments["line_number"]
             if not isinstance(reference_id, str):
                 return "[tool error] open: reference_id must be a string"
             if not isinstance(line_number, int):
-                return "[tool error] open: line_number must be an integer"
+                raise ValueError("line_number must be an integer")
             return tools.open(reference_id, line_number=line_number)
         if name == "summarize":
             candidate_reference_ids = arguments.get("candidate_reference_ids")

@@ -149,6 +149,7 @@ def test_execute_retrieval_tool_validates_argument_shapes():
         ("find", {"reference_id": 1, "patterns": ["agent"]}),
         ("find", {"reference_id": "turn0search0", "patterns": "agent"}),
         ("open", {"reference_id": 1, "line_number": 7}),
+        ("open", {"reference_id": "turn0search0"}),
         ("open", {"reference_id": "turn0search0", "line_number": "7"}),
         ("summarize", {"candidate_reference_ids": "turn0search0"}),
     ]
