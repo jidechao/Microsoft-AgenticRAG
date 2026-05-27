@@ -25,7 +25,7 @@ def extract_markdown_title(text: str, fallback: str) -> str:
 
 
 def split_sentences(text: str) -> list[str]:
-    parts = re.split(r"(?<=[\u3002\uff01\uff1f.!?])\s*", text.strip())
+    parts = re.findall(r".*?[\u3002\uff01\uff1f.!?]\s*|.+$", text.strip(), flags=re.DOTALL)
     return [part for part in parts if part]
 
 
@@ -76,12 +76,10 @@ def _split_oversized_text(text: str, max_chunk_size: int) -> list[str]:
 
 def _join_chunk_parts(left: str, right: str) -> str:
     if not left:
-        return right.strip()
+        return right
     if not right:
-        return left.strip()
-    if left[-1].isspace() or right[0].isspace():
-        return f"{left}{right}".strip()
-    return f"{left} {right}".strip()
+        return left
+    return f"{left}{right}"
 
 
 def _line_span_for_text(lines: list[str], needle: str, start_at: int) -> tuple[int, int]:
