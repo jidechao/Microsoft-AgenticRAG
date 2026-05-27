@@ -240,7 +240,7 @@ def test_chat_session_simple_route_rewrites_searches_streams_and_records_state(m
 
 
 def test_chat_session_failed_turn_rolls_back_messages_before_next_rewrite(monkeypatch):
-    captured_rewrite_histories = []
+    captured_rewrite_contexts = []
 
     class FakeLLMClient:
         pass
@@ -250,12 +250,31 @@ def test_chat_session_failed_turn_rolls_back_messages_before_next_rewrite(monkey
             self.state = None
 
         def search(self, queries):
+            if queries == ["failed turn"]:
+                self.state.references["turn99search0"] = Reference(
+                    reference_id="turn99search0",
+                    chunk=DocumentChunk(
+                        doc_id="doc-failed",
+                        path=Path("docs/failed.md"),
+                        title="Failed turn reference",
+                        filetype="markdown",
+                        chunk_index=0,
+                        line_start=0,
+                        line_end=10,
+                        content="Failed context.",
+                    ),
+                )
+                self.state.add_tool_result(
+                    "search",
+                    "failed result",
+                    metadata={"reference_ids": ["turn99search0"]},
+                )
+                self.state.turn_index = 99
+                self.state.warned_about_tokens = True
             return "context"
 
     def fake_rewrite(llm_client, state, user_input):
-        captured_rewrite_histories.append(
-            [dict(message) for message in state.messages]
-        )
+        captured_rewrite_contexts.append(build_rewrite_messages(state, user_input)[1]["content"])
         return user_input
 
     def fake_stream_simple(llm_client, raw_query, rewritten_query, search_context):
@@ -295,23 +314,29 @@ def test_chat_session_failed_turn_rolls_back_messages_before_next_rewrite(monkey
         "previous result",
         metadata={"reference_ids": ["turn0search0"]},
     )
+    session.state.turn_index = 1
     pre_failure_messages = [dict(message) for message in session.state.messages]
 
     with pytest.raises(RuntimeError, match="stream failed"):
         list(session.answer_turn("failed turn"))
 
     assert session.state.messages == pre_failure_messages
-    assert "turn0search0" in session.state.references
+    assert list(session.state.references) == ["turn0search0"]
     assert [tool_result.name for tool_result in session.state.tool_results] == ["search"]
+    assert session.state.tool_results[0].content == "previous result"
+    assert session.state.turn_index == 1
+    assert session.state.warned_about_tokens is False
 
     assert list(session.answer_turn("next turn")) == ["ok"]
 
-    next_history = captured_rewrite_histories[-1]
-    next_history_text = "\n".join(str(message.get("content")) for message in next_history)
-    assert "previous question" in next_history_text
-    assert "previous answer" in next_history_text
-    assert "next turn" in next_history_text
-    assert "failed turn" not in next_history_text
+    next_rewrite_context = captured_rewrite_contexts[-1]
+    assert "previous question" in next_rewrite_context
+    assert "previous answer" in next_rewrite_context
+    assert "next turn" in next_rewrite_context
+    assert "turn0search0" in next_rewrite_context
+    assert "failed turn" not in next_rewrite_context
+    assert "turn99search0" not in next_rewrite_context
+    assert "Failed turn reference" not in next_rewrite_context
 
 
 def test_chat_session_complex_route_streams_status_and_records_answer(monkeypatch):

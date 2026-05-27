@@ -5,6 +5,7 @@ import re
 from typing import Any, Iterator, Protocol
 
 from agenticrag.loop import execute_retrieval_tool, run_agentic_loop
+from agenticrag.models import ToolResult
 from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
 from agenticrag.state import ConversationState
 from agenticrag.switcher import classify_query
@@ -142,6 +143,36 @@ def stream_simple_chat(
     yield from llm_client.stream(messages)
 
 
+def _copy_tool_result(tool_result: ToolResult) -> ToolResult:
+    return ToolResult(
+        name=tool_result.name,
+        content=tool_result.content,
+        metadata=dict(tool_result.metadata),
+    )
+
+
+def _snapshot_state(state: ConversationState) -> dict[str, Any]:
+    return {
+        "messages": [dict(message) for message in state.messages],
+        "references": dict(state.references),
+        "tool_results": [
+            _copy_tool_result(tool_result) for tool_result in state.tool_results
+        ],
+        "turn_index": state.turn_index,
+        "warned_about_tokens": state.warned_about_tokens,
+    }
+
+
+def _restore_state(state: ConversationState, snapshot: dict[str, Any]) -> None:
+    state.messages = [dict(message) for message in snapshot["messages"]]
+    state.references = dict(snapshot["references"])
+    state.tool_results = [
+        _copy_tool_result(tool_result) for tool_result in snapshot["tool_results"]
+    ]
+    state.turn_index = snapshot["turn_index"]
+    state.warned_about_tokens = snapshot["warned_about_tokens"]
+
+
 class ChatSession:
     def __init__(
         self,
@@ -170,7 +201,7 @@ class ChatSession:
         status_writer: Any | None = None,
     ) -> Iterator[str]:
         writer = status_writer or (lambda text: None)
-        pre_turn_messages = [dict(message) for message in self.state.messages]
+        pre_turn_state = _snapshot_state(self.state)
         try:
             self.state.add_message("user", user_input)
             rewritten_query = rewrite_query(self.llm_client, self.state, user_input)
@@ -227,7 +258,7 @@ class ChatSession:
                 return
             self.state.add_message("assistant", "".join(chunks))
         except Exception:
-            self.state.messages = [dict(message) for message in pre_turn_messages]
+            _restore_state(self.state, pre_turn_state)
             raise
 
     @staticmethod
