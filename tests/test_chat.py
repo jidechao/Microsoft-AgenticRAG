@@ -12,6 +12,7 @@ from agenticrag.chat import (
 from agenticrag.loop import stream_simple_rag
 from agenticrag.models import DocumentChunk, Reference
 from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
+from agenticrag.prompts import SIMPLE_RAG_PROMPT
 from agenticrag.prompts import SYSTEM_PROMPT
 from agenticrag.state import ConversationState
 
@@ -40,6 +41,22 @@ def test_stream_simple_chat_uses_ask_messages_when_rewrite_is_unchanged():
     assert chat_llm.stream_calls == ask_llm.stream_calls
 
 
+def test_stream_simple_chat_requires_reference_id_citations_for_unchanged_rewrite():
+    raw_query = "What is PageIndex?"
+    rewritten_query = "What is PageIndex?"
+    context = "[turn0search0] PageIndex context"
+    llm = CapturingStreamLLM()
+
+    assert list(stream_simple_chat(llm, raw_query, rewritten_query, context)) == [
+        "answer"
+    ]
+
+    messages = llm.stream_calls[0]
+    assert "Reference ID" in messages[0]["content"]
+    assert "事实性陈述" in messages[0]["content"]
+    assert "[turn0search0]" in messages[1]["content"]
+
+
 def test_stream_simple_chat_keeps_raw_rewritten_and_context_when_rewrite_differs():
     raw_query = "它是什么？"
     rewritten_query = "pageindex是什么？"
@@ -54,6 +71,22 @@ def test_stream_simple_chat_keeps_raw_rewritten_and_context_when_rewrite_differs
     assert raw_query in user_content
     assert rewritten_query in user_content
     assert context in user_content
+
+
+def test_stream_simple_chat_requires_reference_id_citations_for_rewritten_query():
+    raw_query = "What does it do?"
+    rewritten_query = "What does PageIndex do?"
+    context = "[turn0search0] PageIndex context"
+    llm = CapturingStreamLLM()
+
+    assert list(stream_simple_chat(llm, raw_query, rewritten_query, context)) == [
+        "answer"
+    ]
+
+    messages = llm.stream_calls[0]
+    assert "Reference ID" in messages[0]["content"]
+    assert "事实性陈述" in messages[0]["content"]
+    assert "[turn0search0]" in messages[1]["content"]
 
 
 def test_rewrite_prompt_preserves_independent_new_topics():
@@ -197,7 +230,9 @@ def test_chat_simple_rag_prompt_covers_required_behavior():
     assert "检索结果" in CHAT_SIMPLE_RAG_PROMPT
     assert "Reference ID" in CHAT_SIMPLE_RAG_PROMPT
     assert "引用" in CHAT_SIMPLE_RAG_PROMPT
+    assert "事实性陈述" in CHAT_SIMPLE_RAG_PROMPT
     assert "证据不足" in CHAT_SIMPLE_RAG_PROMPT
+    assert "事实性陈述" in SIMPLE_RAG_PROMPT
 
 
 def test_parse_rewrite_response_extracts_query():
@@ -357,6 +392,86 @@ def test_chat_session_simple_route_rewrites_searches_streams_and_records_state(m
         {"role": "assistant", "content": "chunk one chunk two"},
     ]
     assert "turn0search0" in session.state.references
+
+
+def test_chat_session_simple_route_streams_search_status(monkeypatch):
+    raw_query = "What is PageIndex?"
+    status_updates = []
+
+    class FakeLLMClient:
+        pass
+
+    class FakeTools:
+        def __init__(self):
+            self.search_calls = []
+            self.state = None
+
+        def search(self, queries):
+            self.search_calls.append(queries)
+            return "[turn0search0] context"
+
+    def fake_stream_simple(llm_client, raw_value, rewritten_value, search_context):
+        assert search_context == "[turn0search0] context"
+        yield "answer"
+
+    monkeypatch.setattr("agenticrag.chat.rewrite_query", lambda llm, state, value: value)
+    monkeypatch.setattr("agenticrag.chat.classify_query", lambda llm, query: "simple")
+    monkeypatch.setattr("agenticrag.chat.stream_simple_chat", fake_stream_simple)
+
+    tools = FakeTools()
+    session = ChatSession(
+        llm_client=FakeLLMClient(),
+        tools=tools,
+        max_calls=3,
+        token_threshold=10000,
+        token_warning_ratio=0.8,
+    )
+
+    assert list(session.answer_turn(raw_query, status_writer=status_updates.append)) == [
+        "answer"
+    ]
+
+    assert status_updates == ["[tool] search"]
+    assert tools.search_calls == [[raw_query]]
+
+
+def test_chat_session_simple_route_streams_search_error_status(monkeypatch):
+    raw_query = "What is PageIndex?"
+    status_updates = []
+
+    class FakeLLMClient:
+        pass
+
+    class FakeTools:
+        def __init__(self):
+            self.search_calls = []
+            self.state = None
+
+        def search(self, queries):
+            self.search_calls.append(queries)
+            raise RuntimeError("retriever unavailable")
+
+    monkeypatch.setattr("agenticrag.chat.rewrite_query", lambda llm, state, value: value)
+    monkeypatch.setattr("agenticrag.chat.classify_query", lambda llm, query: "simple")
+
+    tools = FakeTools()
+    session = ChatSession(
+        llm_client=FakeLLMClient(),
+        tools=tools,
+        max_calls=3,
+        token_threshold=10000,
+        token_warning_ratio=0.8,
+    )
+
+    with pytest.raises(RuntimeError, match="retriever unavailable"):
+        list(session.answer_turn(raw_query, status_writer=status_updates.append))
+
+    assert status_updates == [
+        "[tool] search",
+        "[tool error] search: retriever unavailable",
+    ]
+    assert tools.search_calls == [[raw_query]]
+    assert session.state.messages == []
 
 
 def test_chat_session_failed_turn_rolls_back_messages_before_next_rewrite(monkeypatch):

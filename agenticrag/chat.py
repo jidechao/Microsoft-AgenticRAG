@@ -227,7 +227,12 @@ class ChatSession:
                 route = "complex"
 
             if route == "simple":
-                search_context = self.tools.search([rewritten_query])
+                writer("[tool] search")
+                try:
+                    search_context = self.tools.search([rewritten_query])
+                except Exception as exc:
+                    writer(f"[tool error] search: {exc}")
+                    raise
                 _remove_tool_messages(self.state)
                 chunks: list[str] = []
                 for chunk in stream_simple_chat(

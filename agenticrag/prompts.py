@@ -39,12 +39,15 @@ SYSTEM_PROMPT = """# Overall Instructions
 请默认使用中文回答，并使用可用的 Reference ID 标注证据。
 """
 
-SIMPLE_RAG_PROMPT = """请基于给定检索片段回答用户问题。必须引用片段中的 Reference ID。如果证据不足，请明确说明。
+SIMPLE_RAG_PROMPT = """请基于给定检索片段回答用户问题。必须引用片段中的 Reference ID。
+基于检索上下文给出的每个事实性陈述都必须标注对应的 Reference ID。
+如果证据不足，请明确说明。
 """
 
 CHAT_SIMPLE_RAG_PROMPT = """你将看到原始用户问题、改写后的自包含问题和检索结果。
 请回答原始用户问题；必要时使用改写后的问题来理解上下文、指代、省略或追问。
 回答必须基于检索结果，并引用使用到的 Reference ID。
+基于检索上下文给出的每个事实性陈述都必须标注对应的 Reference ID。
 如果证据不足，请清楚说明证据不足，不要编造答案。"""
 
 FORCE_FINAL_ANSWER_PROMPT = """FORCEFINALANSWER:
