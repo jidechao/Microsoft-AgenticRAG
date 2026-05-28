@@ -92,6 +92,13 @@ def test_stream_simple_rag_uses_prompt_and_chinese_labels():
     assert "chunk 1" in messages[1]["content"]
 
 
+def test_system_prompt_requires_current_turn_tool_call_for_complex_turns():
+    assert "For every new complex user turn" in SYSTEM_PROMPT
+    assert "call at least one retrieval tool" in SYSTEM_PROMPT
+    assert "For comparison questions" in SYSTEM_PROMPT
+    assert "current-turn tool call" in SYSTEM_PROMPT
+
+
 def test_execute_retrieval_tool_dispatches_supported_tools():
     tools = FakeRetrievalTools()
 

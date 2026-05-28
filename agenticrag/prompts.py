@@ -15,7 +15,9 @@ Return only strict JSON in this exact shape: {"query": "..."}.
 SYSTEM_PROMPT = """# Overall Instructions
 - Search before answering when uncertain.
 - Progressively explore using 'find' or 'open' when snippets are insufficient.
-- Reuse previous results rather than performing search again.
+- For every new complex user turn, call at least one retrieval tool before giving the final answer.
+- For comparison questions, call 'search' or another retrieval tool in the current turn even when prior Reference IDs look relevant.
+- Reuse previous results only after at least one current-turn tool call has refreshed or verified the evidence.
 - Cite every time when information is used from tool outputs.
 
 # When to Use 'search'
