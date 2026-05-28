@@ -2,6 +2,10 @@
 
 Python MVP reproduction of AgenticRAG for local enterprise-style documents.
 
+## Documentation
+
+- Technical architecture and implementation guide: [technical-architecture-and-implementation.md](./technical-architecture-and-implementation.md)
+
 ## Setup
 
 Run these commands in Windows PowerShell from the repository root:
