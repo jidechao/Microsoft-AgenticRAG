@@ -278,7 +278,8 @@ def test_run_agentic_loop_requires_current_turn_retrieval_before_final_answer():
             message_response(content="premature final from history"),
             message_response(tool_calls=[tool]),
             message_response(content="final answer"),
-        ]
+        ],
+        stream_chunks=["final ", "answer"],
     )
     state = ConversationState(user_query="question")
     statuses = []
@@ -306,7 +307,7 @@ def test_run_agentic_loop_requires_current_turn_retrieval_before_final_answer():
         )
     )
 
-    assert chunks == ["final answer"]
+    assert chunks == ["final ", "answer"]
     assert statuses == ["[tool] search", "[tool] search"]
     assert tool_calls == [
         ("search", {"queries": ["question"]}),
@@ -355,6 +356,60 @@ def test_run_agentic_loop_streams_tool_error_status():
     ]
 
 
+def test_run_agentic_loop_streams_final_answer_after_tool_chain():
+    search_tool = tool_call("call-1", "search", '{"queries": ["alpha"]}')
+    find_tool = tool_call(
+        "call-2",
+        "find",
+        '{"reference_id": "turn0search0", "patterns": ["agent"]}',
+    )
+    open_tool = tool_call(
+        "call-3",
+        "open",
+        '{"reference_id": "turn0search0", "line_number": 3}',
+    )
+    llm = FakeLLM(
+        responses=[
+            message_response(tool_calls=[search_tool]),
+            message_response(tool_calls=[find_tool]),
+            message_response(tool_calls=[open_tool]),
+            message_response(content="non-stream fallback answer"),
+        ],
+        stream_chunks=["stream ", "answer"],
+    )
+    state = ConversationState(user_query="question")
+    statuses = []
+
+    def execute(name, arguments):
+        return add_reference_result(state, name, content=f"{name} result")
+
+    chunks = list(
+        run_agentic_loop(
+            llm,
+            state,
+            execute,
+            max_calls=4,
+            token_threshold=10_000,
+            token_warning_ratio=0.8,
+            status_writer=statuses.append,
+            require_current_turn_retrieval=True,
+        )
+    )
+
+    assert chunks == ["stream ", "answer"]
+    assert statuses == ["[tool] search", "[tool] find", "[tool] open"]
+    assert len(llm.stream_calls) == 1
+    stream_messages = llm.stream_calls[0]
+    assert stream_messages is not state.messages
+    assert not any(message.get("role") == "tool" for message in stream_messages)
+    assert not any("tool_calls" in message for message in stream_messages)
+    assert stream_messages[-1]["role"] == "system"
+    assert "Collected tool evidence:" in stream_messages[-1]["content"]
+    assert "[search]" in stream_messages[-1]["content"]
+    assert "[find]" in stream_messages[-1]["content"]
+    assert "[open]" in stream_messages[-1]["content"]
+
+
 def test_run_agentic_loop_forces_final_answer_after_max_calls():
     tool = tool_call("call-1", "search", '{"queries": ["alpha"]}')
     llm = FakeLLM(
@@ -382,7 +437,12 @@ def test_run_agentic_loop_forces_final_answer_after_max_calls():
         "role": "system",
         "content": FORCE_FINAL_ANSWER_PROMPT,
     }
-    assert llm.stream_calls[0] is state.messages
+    stream_messages = llm.stream_calls[0]
+    assert stream_messages is not state.messages
+    assert stream_messages[0]["role"] == "system"
+    assert "Tool budget is exhausted." in stream_messages[0]["content"]
+    assert not any(message.get("role") == "tool" for message in stream_messages)
+    assert not any("tool_calls" in message for message in stream_messages)
 
 
 def test_run_agentic_loop_summarizes_when_token_threshold_is_reached():

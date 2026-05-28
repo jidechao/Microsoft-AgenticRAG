@@ -172,6 +172,71 @@ def _run_automatic_search(
     return result
 
 
+def _has_multi_step_current_turn_tool_activity(
+    state: ConversationState,
+    start_index: int,
+) -> bool:
+    return len(state.tool_results[start_index:]) >= 2
+
+
+def _format_tool_results_for_final_answer(
+    state: ConversationState,
+    start_index: int,
+) -> str:
+    lines: list[str] = []
+    for tool_result in state.tool_results[start_index:]:
+        lines.append(f"[{tool_result.name}]")
+        lines.append(tool_result.content)
+    return "\n".join(lines).strip()
+
+
+def _build_streaming_final_messages(
+    state: ConversationState,
+    tool_results_start_index: int,
+    *,
+    force_final: bool = False,
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for message in state.messages:
+        if message.get("role") == "system":
+            continue
+        if message.get("role") == "tool":
+            continue
+        if message.get("tool_calls"):
+            continue
+        content = message.get("content")
+        if content is None:
+            continue
+        messages.append({"role": message.get("role", "user"), "content": content})
+
+    evidence = _format_tool_results_for_final_answer(state, tool_results_start_index)
+    messages.insert(
+        0,
+        {
+            "role": "system",
+            "content": (
+                "You are writing the final user-facing answer after retrieval is complete. "
+                + (
+                    "Tool budget is exhausted. "
+                    if force_final
+                    else ""
+                )
+                + "Do not call tools. Do not emit tool-call markup, XML tags, DSML traces, "
+                "or any protocol/internal formatting. Answer in plain Chinese prose and cite "
+                "Reference IDs inline when useful."
+            ),
+        },
+    )
+    if evidence:
+        messages.append(
+            {
+                "role": "system",
+                "content": f"Collected tool evidence:\n{evidence}",
+            }
+        )
+    return messages
+
+
 def _message_from_response(response: Any) -> Any:
     return _get_value(_get_value(response, "choices")[0], "message")
 
@@ -364,6 +429,11 @@ def run_agentic_loop(
                 state.add_message("system", CURRENT_TURN_TOOL_REQUIRED_PROMPT)
                 prompted_for_current_turn_tool = True
                 continue
+            if _has_multi_step_current_turn_tool_activity(state, tool_results_start_index):
+                yield from llm_client.stream(
+                    _build_streaming_final_messages(state, tool_results_start_index)
+                )
+                return
             yield content
         return
 
@@ -372,7 +442,13 @@ def run_agentic_loop(
         or _has_current_turn_retrieval_result(state, tool_results_start_index)
     ):
         state.add_message("system", FORCE_FINAL_ANSWER_PROMPT)
-        yield from llm_client.stream(state.messages)
+        yield from llm_client.stream(
+            _build_streaming_final_messages(
+                state,
+                tool_results_start_index,
+                force_final=True,
+            )
+        )
         return
 
     yield CURRENT_TURN_RETRIEVAL_FAILED_MESSAGE

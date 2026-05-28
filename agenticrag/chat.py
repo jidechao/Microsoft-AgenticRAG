@@ -16,6 +16,14 @@ from agenticrag.state import ConversationState
 from agenticrag.switcher import classify_query
 
 Message = dict[str, str]
+REFERENCE_SECTION_HEADER = "\n\n引用标识（Reference ID）："
+STREAM_STOP_MARKERS = (
+    REFERENCE_SECTION_HEADER,
+    "<｜｜DSML｜｜tool_calls>",
+    "<｜｜DSML｜｜invoke",
+    "<|DSML|tool_calls>",
+    "<|DSML|invoke",
+)
 
 CHAT_HELP = """Commands:
 /help  Show this help.
@@ -193,6 +201,32 @@ def _remove_tool_messages(state: ConversationState) -> None:
     ]
 
 
+def _iter_answer_body(chunks: Iterator[str]) -> Iterator[str]:
+    pending = ""
+    keep_tail = max(max(len(marker) for marker in STREAM_STOP_MARKERS) - 1, 0)
+
+    for chunk in chunks:
+        pending += chunk
+        stop_indexes = [
+            pending.find(marker)
+            for marker in STREAM_STOP_MARKERS
+            if pending.find(marker) != -1
+        ]
+        if stop_indexes:
+            stop_index = min(stop_indexes)
+            if stop_index > 0:
+                yield pending[:stop_index]
+            return
+
+        if keep_tail and len(pending) > keep_tail:
+            flush_index = len(pending) - keep_tail
+            yield pending[:flush_index]
+            pending = pending[flush_index:]
+
+    if pending:
+        yield pending
+
+
 class ChatSession:
     def __init__(
         self,
@@ -241,11 +275,13 @@ class ChatSession:
                     raise
                 _remove_tool_messages(self.state)
                 chunks: list[str] = []
-                for chunk in stream_simple_chat(
-                    self.llm_client,
-                    user_input,
-                    rewritten_query,
-                    search_context,
+                for chunk in _iter_answer_body(
+                    stream_simple_chat(
+                        self.llm_client,
+                        user_input,
+                        rewritten_query,
+                        search_context,
+                    )
                 ):
                     chunks.append(chunk)
                     yield chunk
@@ -256,9 +292,8 @@ class ChatSession:
                     tool_results_start_index=tool_results_start_index,
                 )
                 if reference_section:
-                    chunks.append(reference_section)
                     yield reference_section
-                self.state.add_message("assistant", "".join(chunks))
+                self.state.add_message("assistant", answer)
                 return
 
             self.state.messages[-1]["content"] = "\n".join(
@@ -273,19 +308,21 @@ class ChatSession:
             completed = False
             tool_results_start_index = len(self.state.tool_results)
             try:
-                for chunk in run_agentic_loop(
-                    self.llm_client,
-                    self.state,
-                    lambda name, arguments: execute_retrieval_tool(
-                        self.tools,
-                        name,
-                        arguments,
-                    ),
-                    max_calls=self.max_calls,
-                    token_threshold=self.token_threshold,
-                    token_warning_ratio=self.token_warning_ratio,
-                    status_writer=writer,
-                    require_current_turn_retrieval=True,
+                for chunk in _iter_answer_body(
+                    run_agentic_loop(
+                        self.llm_client,
+                        self.state,
+                        lambda name, arguments: execute_retrieval_tool(
+                            self.tools,
+                            name,
+                            arguments,
+                        ),
+                        max_calls=self.max_calls,
+                        token_threshold=self.token_threshold,
+                        token_warning_ratio=self.token_warning_ratio,
+                        status_writer=writer,
+                        require_current_turn_retrieval=True,
+                    )
                 ):
                     chunks.append(chunk)
                     yield chunk
@@ -303,9 +340,8 @@ class ChatSession:
                 tool_results_start_index=tool_results_start_index,
             )
             if reference_section:
-                chunks.append(reference_section)
                 yield reference_section
-            self.state.add_message("assistant", "".join(chunks))
+            self.state.add_message("assistant", answer)
         except Exception:
             _restore_state(self.state, pre_turn_state)
             raise

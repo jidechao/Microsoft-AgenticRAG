@@ -526,18 +526,14 @@ def test_chat_session_simple_route_rewrites_searches_streams_and_records_state(m
 
     chunks = list(session.answer_turn(raw_query))
 
-    assert chunks[:2] == ["chunk one ", "chunk two"]
-    assert len(chunks) == 3
-    assert chunks[2].startswith("\n\n引用标识（Reference ID）：\n- turn0search0: ")
-    assert chunks[2].endswith(" (docs/design.md:1-11)")
+    assert "".join(chunks[:-1]) == "chunk one chunk two"
+    assert chunks[-1].startswith("\n\n引用标识（Reference ID）：\n- turn0search0: ")
+    assert chunks[-1].endswith(" (docs/design.md:1-11)")
     assert tools.search_calls == [[rewritten_query]]
     assert session.state.messages[0] == {"role": "user", "content": raw_query}
     assistant_message = session.state.messages[1]
     assert assistant_message["role"] == "assistant"
-    assert assistant_message["content"].startswith(
-        "chunk one chunk two\n\n引用标识（Reference ID）：\n- turn0search0: "
-    )
-    assert assistant_message["content"].endswith(" (docs/design.md:1-11)")
+    assert assistant_message["content"] == "chunk one chunk two"
     assert "turn0search0" in session.state.references
 
 
@@ -811,11 +807,10 @@ def test_chat_session_complex_route_streams_status_and_records_answer(monkeypatc
 
     chunks = list(session.answer_turn(raw_query, status_writer=capture_status_writer))
 
-    assert chunks == [
-        "complex chunk one ",
-        "complex chunk two",
-        "\n\n引用标识（Reference ID）：\n- turn0search0: AgenticRAG design (docs/design.md:1-11)",
-    ]
+    assert "".join(chunks[:-1]) == "complex chunk one complex chunk two"
+    assert chunks[-1] == (
+        "\n\n引用标识（Reference ID）：\n- turn0search0: AgenticRAG design (docs/design.md:1-11)"
+    )
     assert status_updates == ["[tool] search"]
     assert tools.search_calls == [[rewritten_query]]
     user_messages = [
@@ -826,10 +821,7 @@ def test_chat_session_complex_route_streams_status_and_records_answer(monkeypatc
     assert rewritten_query in user_messages[0]["content"]
     assert session.state.messages[-1] == {
         "role": "assistant",
-        "content": (
-            "complex chunk one complex chunk two\n\n引用标识（Reference ID）：\n"
-            "- turn0search0: AgenticRAG design (docs/design.md:1-11)"
-        ),
+        "content": "complex chunk one complex chunk two",
     }
     assert "turn0search0" in session.state.references
 
@@ -927,10 +919,7 @@ def test_chat_session_complex_route_removes_internal_loop_messages_and_keeps_ref
         },
         {
             "role": "assistant",
-            "content": (
-                "final answer\n\n引用标识（Reference ID）：\n"
-                "- turn0search0: AgenticRAG design (docs/design.md:1-11)"
-            ),
+            "content": "final answer",
         },
     ]
     assert all(message.get("content") != SYSTEM_PROMPT for message in session.state.messages)
@@ -1011,23 +1000,147 @@ def test_chat_session_simple_then_complex_drops_stale_tool_messages(monkeypatch)
         token_warning_ratio=0.8,
     )
 
-    assert list(session.answer_turn("first question")) == [
-        "simple answer [turn0search0]",
-        "\n\n引用标识（Reference ID）：\n- turn0search0: AgenticRAG design (docs/design.md:1-11)",
-    ]
-    assert "turn0search0" in session.state.references
-    assert [tool_result.name for tool_result in session.state.tool_results] == ["search"]
-    assert not any(message.get("role") == "tool" for message in session.state.messages)
-
-    assert list(session.answer_turn("follow-up question")) == ["complex answer"]
-
-    assert captured_complex_messages
-    assert not any(
-        message.get("role") == "tool" for message in captured_complex_messages
+    first_chunks = list(session.answer_turn("first question"))
+    assert "".join(first_chunks[:-1]) == "simple answer [turn0search0]"
+    assert first_chunks[-1] == (
+        "\n\n引用标识（Reference ID）：\n- turn0search0: AgenticRAG design (docs/design.md:1-11)"
     )
     assert "turn0search0" in session.state.references
     assert [tool_result.name for tool_result in session.state.tool_results] == ["search"]
     assert not any(message.get("role") == "tool" for message in session.state.messages)
+
+
+def test_chat_session_does_not_store_reference_appendix_in_history(monkeypatch):
+    raw_query = "What is PageIndex?"
+
+    class FakeLLMClient:
+        pass
+
+    class FakeTools:
+        def __init__(self):
+            self.state = None
+
+        def search(self, queries):
+            self.state.references["turn0search0"] = Reference(
+                reference_id="turn0search0",
+                chunk=DocumentChunk(
+                    doc_id="doc-1",
+                    path=Path("docs/design.md"),
+                    title="AgenticRAG design",
+                    filetype="markdown",
+                    chunk_index=0,
+                    line_start=0,
+                    line_end=10,
+                    content="Context.",
+                ),
+            )
+            self.state.add_tool_result(
+                "search",
+                "[turn0search0] context",
+                metadata={"reference_ids": ["turn0search0"]},
+            )
+            return "[turn0search0] context"
+
+    def fake_stream_simple(llm_client, raw_value, rewritten_value, search_context):
+        yield "answer body"
+        yield "\n\n引用标识（Reference ID）：\n- turn0search0: model appendix"
+
+    monkeypatch.setattr("agenticrag.chat.rewrite_query", lambda llm, state, value: value)
+    monkeypatch.setattr("agenticrag.chat.classify_query", lambda llm, query: "simple")
+    monkeypatch.setattr("agenticrag.chat.stream_simple_chat", fake_stream_simple)
+
+    session = ChatSession(
+        llm_client=FakeLLMClient(),
+        tools=FakeTools(),
+        max_calls=3,
+        token_threshold=10000,
+        token_warning_ratio=0.8,
+    )
+
+    chunks = list(session.answer_turn(raw_query))
+
+    assert "".join(chunks[:-1]) == "answer body"
+    assert chunks[-1] == (
+        "\n\n引用标识（Reference ID）：\n- turn0search0: AgenticRAG design (docs/design.md:1-11)"
+    )
+    assert session.state.messages[-1] == {
+        "role": "assistant",
+        "content": "answer body",
+    }
+    rewrite_context = build_rewrite_messages(session.state, "follow-up question")[1]["content"]
+    assert "answer body" in rewrite_context
+    assert "引用标识（Reference ID）" not in rewrite_context
+    assert "model appendix" not in rewrite_context
+
+
+def test_chat_session_filters_dsml_protocol_output_from_stream(monkeypatch):
+    raw_query = "How are the skills used?"
+
+    class FakeLLMClient:
+        pass
+
+    class FakeTools:
+        def __init__(self):
+            self.state = None
+
+        def search(self, queries):
+            self.state.references["turn0search0"] = Reference(
+                reference_id="turn0search0",
+                chunk=DocumentChunk(
+                    doc_id="doc-1",
+                    path=Path("docs/design.md"),
+                    title="AgenticRAG design",
+                    filetype="markdown",
+                    chunk_index=0,
+                    line_start=0,
+                    line_end=10,
+                    content="Context.",
+                ),
+            )
+            self.state.add_tool_result(
+                "search",
+                "[turn0search0] context",
+                metadata={"reference_ids": ["turn0search0"]},
+            )
+            return "[turn0search0] context"
+
+    def fake_run_agentic_loop(
+        llm_client,
+        state,
+        tool_executor,
+        max_calls,
+        token_threshold,
+        token_warning_ratio,
+        status_writer,
+        require_current_turn_retrieval=False,
+    ):
+        tool_executor("search", {"queries": [raw_query]})
+        yield "answer body"
+        yield "<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name=\"open\">"
+
+    monkeypatch.setattr("agenticrag.chat.rewrite_query", lambda llm, state, value: value)
+    monkeypatch.setattr("agenticrag.chat.classify_query", lambda llm, query: "complex")
+    monkeypatch.setattr("agenticrag.chat.run_agentic_loop", fake_run_agentic_loop)
+
+    session = ChatSession(
+        llm_client=FakeLLMClient(),
+        tools=FakeTools(),
+        max_calls=3,
+        token_threshold=10000,
+        token_warning_ratio=0.8,
+    )
+
+    chunks = list(session.answer_turn(raw_query))
+
+    assert "".join(chunks[:-1]) == "answer body"
+    assert all("DSML" not in chunk for chunk in chunks)
+    assert chunks[-1] == (
+        "\n\n引用标识（Reference ID）：\n- turn0search0: AgenticRAG design (docs/design.md:1-11)"
+    )
+    assert session.state.messages[-1] == {
+        "role": "assistant",
+        "content": "answer body",
+    }
 
 
 def test_chat_session_reset_clears_state_refs_and_keeps_empty_fresh_history():
