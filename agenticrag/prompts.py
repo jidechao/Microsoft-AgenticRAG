@@ -5,8 +5,9 @@ Use complex for multi-step, multi-document, comparison, long-document, or ambigu
 """
 
 QUERY_REWRITE_PROMPT = """Rewrite the current user question into a self-contained question for a multi-turn AgenticRAG session.
-Use the recent conversation and available Reference IDs only to resolve context, pronouns, ellipsis, or follow-up meaning.
-Return the current question unchanged if it is already self-contained.
+Use the recent conversation and available Reference IDs only for pronouns, ellipsis, explicit follow-ups, or Reference IDs.
+If the current question is self-contained or introduces an independent new topic, return it exactly unchanged.
+Do not blend the current question with prior conversation or change its topic just because history exists.
 Do not answer the question.
 Return only strict JSON in this exact shape: {"query": "..."}.
 """

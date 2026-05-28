@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Iterator, Protocol
 
-from agenticrag.loop import execute_retrieval_tool, run_agentic_loop
+from agenticrag.loop import execute_retrieval_tool, run_agentic_loop, stream_simple_rag
 from agenticrag.models import ToolResult
 from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
 from agenticrag.state import ConversationState
@@ -93,6 +93,11 @@ def build_rewrite_messages(
         [
             "Recent conversation:",
             _history_summary(state, history_limit),
+            "Rewrite guard:",
+            (
+                "Recent conversation is context only. Do not continue the previous "
+                "topic unless the current question explicitly depends on it."
+            ),
             "Available Reference IDs:",
             _reference_summary(state),
             "Current user question:",
@@ -124,6 +129,10 @@ def stream_simple_chat(
     rewritten_query: str,
     search_context: str,
 ) -> Iterator[str]:
+    if raw_query.strip() == rewritten_query.strip():
+        yield from stream_simple_rag(llm_client, raw_query, search_context)
+        return
+
     messages = [
         {"role": "system", "content": CHAT_SIMPLE_RAG_PROMPT},
         {

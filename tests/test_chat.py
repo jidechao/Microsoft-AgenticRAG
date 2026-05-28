@@ -7,11 +7,131 @@ from agenticrag.chat import (
     build_rewrite_messages,
     parse_rewrite_response,
     rewrite_query,
+    stream_simple_chat,
 )
+from agenticrag.loop import stream_simple_rag
 from agenticrag.models import DocumentChunk, Reference
 from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
 from agenticrag.prompts import SYSTEM_PROMPT
 from agenticrag.state import ConversationState
+
+
+class CapturingStreamLLM:
+    def __init__(self):
+        self.stream_calls = []
+
+    def stream(self, messages):
+        self.stream_calls.append(messages)
+        yield "answer"
+
+
+def test_stream_simple_chat_uses_ask_messages_when_rewrite_is_unchanged():
+    raw_query = "pageindex是什么？"
+    rewritten_query = "pageindex是什么？"
+    context = "[turn0search0] PageIndex context"
+    chat_llm = CapturingStreamLLM()
+    ask_llm = CapturingStreamLLM()
+
+    assert list(stream_simple_chat(chat_llm, raw_query, rewritten_query, context)) == [
+        "answer"
+    ]
+    assert list(stream_simple_rag(ask_llm, raw_query, context)) == ["answer"]
+
+    assert chat_llm.stream_calls == ask_llm.stream_calls
+
+
+def test_stream_simple_chat_keeps_raw_rewritten_and_context_when_rewrite_differs():
+    raw_query = "它是什么？"
+    rewritten_query = "pageindex是什么？"
+    context = "[turn0search0] PageIndex context"
+    llm = CapturingStreamLLM()
+
+    assert list(stream_simple_chat(llm, raw_query, rewritten_query, context)) == [
+        "answer"
+    ]
+
+    user_content = llm.stream_calls[0][1]["content"]
+    assert raw_query in user_content
+    assert rewritten_query in user_content
+    assert context in user_content
+
+
+def test_rewrite_prompt_preserves_independent_new_topics():
+    assert "independent new topic" in QUERY_REWRITE_PROMPT
+    assert "exactly unchanged" in QUERY_REWRITE_PROMPT
+    assert "Do not blend" in QUERY_REWRITE_PROMPT
+    assert "only for pronouns, ellipsis, explicit follow-ups, or Reference IDs" in (
+        QUERY_REWRITE_PROMPT
+    )
+
+
+def test_build_rewrite_messages_warns_history_is_context_only():
+    state = ConversationState(user_query="previous unrelated question")
+    state.messages.clear()
+    state.add_message("user", "previous unrelated question")
+    state.add_message("assistant", "previous unrelated answer")
+
+    messages = build_rewrite_messages(state, "pageindex是什么？")
+    user_message = messages[1]["content"]
+
+    assert "Recent conversation is context only" in user_message
+    assert "Do not continue the previous topic" in user_message
+    assert "unless the current question explicitly depends on it" in user_message
+
+
+def test_chat_session_preserves_independent_question_after_unrelated_history(monkeypatch):
+    raw_query = "pageindex是什么？"
+
+    class ContractAwareLLM:
+        def __init__(self):
+            self.complete_calls = []
+            self.stream_calls = []
+
+        def complete(self, *, messages):
+            self.complete_calls.append(messages)
+            has_prompt_contract = (
+                "independent new topic" in messages[0]["content"]
+                and "Do not blend" in messages[0]["content"]
+                and "Recent conversation is context only" in messages[1]["content"]
+                and "Do not continue the previous topic" in messages[1]["content"]
+                and raw_query in messages[1]["content"]
+            )
+            if not has_prompt_contract:
+                return '{"query": "What is PageIndex in the unrelated previous topic?"}'
+            return '{"query": "pageindex是什么？"}'
+
+        def stream(self, messages):
+            self.stream_calls.append(messages)
+            yield "answer"
+
+    class FakeTools:
+        def __init__(self):
+            self.search_calls = []
+            self.state = None
+
+        def search(self, queries):
+            self.search_calls.append(queries)
+            return "[turn1search0] PageIndex context"
+
+    monkeypatch.setattr("agenticrag.chat.classify_query", lambda llm, query: "simple")
+
+    llm = ContractAwareLLM()
+    tools = FakeTools()
+    session = ChatSession(
+        llm_client=llm,
+        tools=tools,
+        max_calls=3,
+        token_threshold=10000,
+        token_warning_ratio=0.8,
+    )
+    session.state.add_message("user", "What is the unrelated previous topic?")
+    session.state.add_message("assistant", "It is unrelated.")
+
+    assert list(session.answer_turn(raw_query)) == ["answer"]
+
+    assert tools.search_calls == [[raw_query]]
+    assert len(llm.complete_calls) == 1
+    assert llm.stream_calls
 
 
 def test_run_chat_handles_help_reset_and_exit(monkeypatch, capsys):
