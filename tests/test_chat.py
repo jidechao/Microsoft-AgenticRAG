@@ -9,7 +9,7 @@ from agenticrag.chat import (
     rewrite_query,
     stream_simple_chat,
 )
-from agenticrag.loop import stream_simple_rag
+from agenticrag.loop import build_reference_id_section, stream_simple_rag
 from agenticrag.models import DocumentChunk, Reference
 from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
 from agenticrag.prompts import SIMPLE_RAG_PROMPT
@@ -24,6 +24,116 @@ class CapturingStreamLLM:
     def stream(self, messages):
         self.stream_calls.append(messages)
         yield "answer"
+
+
+def make_reference(reference_id="turn0search0"):
+    return Reference(
+        reference_id=reference_id,
+        chunk=DocumentChunk(
+            doc_id=f"doc-{reference_id}",
+            path=Path("docs/file.md"),
+            title="Reference title",
+            filetype="markdown",
+            chunk_index=0,
+            line_start=0,
+            line_end=19,
+            content="Reference content.",
+        ),
+    )
+
+
+def test_build_reference_id_section_prefers_ids_used_in_answer():
+    state = ConversationState(user_query="question")
+    state.references["turn0search0"] = make_reference("turn0search0")
+    state.references["turn0search1"] = make_reference("turn0search1")
+    state.add_tool_result(
+        "search",
+        "context",
+        metadata={"reference_ids": ["turn0search0", "turn0search1"]},
+    )
+
+    section = build_reference_id_section(
+        state,
+        "Answer cites [turn0search0] and turn0search0 again.",
+        tool_results_start_index=0,
+    )
+
+    assert section == (
+        "\n\n引用标识（Reference ID）：\n"
+        "- turn0search0: Reference title (docs/file.md:1-20)"
+    )
+
+
+def test_build_reference_id_section_falls_back_to_tool_metadata():
+    state = ConversationState(user_query="question")
+    state.references["turn0search0"] = make_reference("turn0search0")
+    state.add_tool_result(
+        "search",
+        "context",
+        metadata={"reference_ids": ["turn0search0"]},
+    )
+
+    section = build_reference_id_section(
+        state,
+        "Answer does not cite explicitly.",
+        tool_results_start_index=0,
+    )
+
+    assert "- turn0search0: Reference title (docs/file.md:1-20)" in section
+
+
+def test_build_reference_id_section_ignores_summarize_metadata_fallback():
+    state = ConversationState(user_query="question")
+    state.references["turn0search0"] = make_reference("turn0search0")
+    state.add_tool_result(
+        "summarize",
+        "summary",
+        metadata={"reference_ids": ["turn0search0"]},
+    )
+
+    assert (
+        build_reference_id_section(
+            state,
+            "Answer does not cite explicitly.",
+            tool_results_start_index=0,
+        )
+        == ""
+    )
+
+
+def test_build_reference_id_section_limits_metadata_fallback_candidates():
+    state = ConversationState(user_query="question")
+    reference_ids = [f"turn0search{index}" for index in range(7)]
+    for reference_id in reference_ids:
+        state.references[reference_id] = make_reference(reference_id)
+    state.add_tool_result(
+        "search",
+        "context",
+        metadata={"reference_ids": reference_ids},
+    )
+
+    section = build_reference_id_section(
+        state,
+        "Answer does not cite explicitly.",
+        tool_results_start_index=0,
+    )
+
+    assert "- turn0search0:" in section
+    assert "- turn0search4:" in section
+    assert "- turn0search5:" not in section
+
+
+def test_build_reference_id_section_omits_empty_refs():
+    state = ConversationState(user_query="question")
+
+    assert (
+        build_reference_id_section(
+            state,
+            "Answer without references.",
+            tool_results_start_index=0,
+        )
+        == ""
+    )
 
 
 def test_stream_simple_chat_uses_ask_messages_when_rewrite_is_unchanged():
@@ -351,6 +461,11 @@ def test_chat_session_simple_route_rewrites_searches_streams_and_records_state(m
                     content="第二个模块介绍",
                 ),
             )
+            self.state.add_tool_result(
+                "search",
+                "[turn0search0] context",
+                metadata={"reference_ids": ["turn0search0"]},
+            )
             return "[turn0search0] context"
 
     def fake_rewrite(llm_client, state, user_input):
@@ -385,12 +500,18 @@ def test_chat_session_simple_route_rewrites_searches_streams_and_records_state(m
 
     chunks = list(session.answer_turn(raw_query))
 
-    assert chunks == ["chunk one ", "chunk two"]
+    assert chunks[:2] == ["chunk one ", "chunk two"]
+    assert len(chunks) == 3
+    assert chunks[2].startswith("\n\n引用标识（Reference ID）：\n- turn0search0: ")
+    assert chunks[2].endswith(" (docs/design.md:1-11)")
     assert tools.search_calls == [[rewritten_query]]
-    assert session.state.messages == [
-        {"role": "user", "content": raw_query},
-        {"role": "assistant", "content": "chunk one chunk two"},
-    ]
+    assert session.state.messages[0] == {"role": "user", "content": raw_query}
+    assistant_message = session.state.messages[1]
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["content"].startswith(
+        "chunk one chunk two\n\n引用标识（Reference ID）：\n- turn0search0: "
+    )
+    assert assistant_message["content"].endswith(" (docs/design.md:1-11)")
     assert "turn0search0" in session.state.references
 
 
@@ -607,6 +728,11 @@ def test_chat_session_complex_route_streams_status_and_records_answer(monkeypatc
                     content="The second module coordinates retrieval tools.",
                 ),
             )
+            self.state.add_tool_result(
+                "search",
+                "[turn0search0] context",
+                metadata={"reference_ids": ["turn0search0"]},
+            )
             return "[turn0search0] context"
 
     def fake_rewrite(llm_client, state, user_input):
@@ -658,7 +784,11 @@ def test_chat_session_complex_route_streams_status_and_records_answer(monkeypatc
 
     chunks = list(session.answer_turn(raw_query, status_writer=capture_status_writer))
 
-    assert chunks == ["complex chunk one ", "complex chunk two"]
+    assert chunks == [
+        "complex chunk one ",
+        "complex chunk two",
+        "\n\n引用标识（Reference ID）：\n- turn0search0: AgenticRAG design (docs/design.md:1-11)",
+    ]
     assert status_updates == ["[tool] search"]
     assert tools.search_calls == [[rewritten_query]]
     user_messages = [
@@ -669,7 +799,10 @@ def test_chat_session_complex_route_streams_status_and_records_answer(monkeypatc
     assert rewritten_query in user_messages[0]["content"]
     assert session.state.messages[-1] == {
         "role": "assistant",
-        "content": "complex chunk one complex chunk two",
+        "content": (
+            "complex chunk one complex chunk two\n\n引用标识（Reference ID）：\n"
+            "- turn0search0: AgenticRAG design (docs/design.md:1-11)"
+        ),
     }
     assert "turn0search0" in session.state.references
 
@@ -749,7 +882,10 @@ def test_chat_session_complex_route_removes_internal_loop_messages_and_keeps_ref
         token_warning_ratio=0.8,
     )
 
-    assert list(session.answer_turn(raw_query)) == ["final answer"]
+    assert list(session.answer_turn(raw_query)) == [
+        "final answer",
+        "\n\n引用标识（Reference ID）：\n- turn0search0: AgenticRAG design (docs/design.md:1-11)",
+    ]
 
     assert session.state.messages == [
         {
@@ -761,7 +897,13 @@ def test_chat_session_complex_route_removes_internal_loop_messages_and_keeps_ref
                 ]
             ),
         },
-        {"role": "assistant", "content": "final answer"},
+        {
+            "role": "assistant",
+            "content": (
+                "final answer\n\n引用标识（Reference ID）：\n"
+                "- turn0search0: AgenticRAG design (docs/design.md:1-11)"
+            ),
+        },
     ]
     assert all(message.get("content") != SYSTEM_PROMPT for message in session.state.messages)
     assert not any(
@@ -809,7 +951,7 @@ def test_chat_session_simple_then_complex_drops_stale_tool_messages(monkeypatch)
             return f"[{reference_id}] context"
 
     def fake_stream_simple(llm_client, raw_query, rewritten_query, search_context):
-        yield "simple answer"
+        yield "simple answer [turn0search0]"
 
     def fake_run_agentic_loop(
         llm_client,
@@ -840,7 +982,10 @@ def test_chat_session_simple_then_complex_drops_stale_tool_messages(monkeypatch)
         token_warning_ratio=0.8,
     )
 
-    assert list(session.answer_turn("first question")) == ["simple answer"]
+    assert list(session.answer_turn("first question")) == [
+        "simple answer [turn0search0]",
+        "\n\n引用标识（Reference ID）：\n- turn0search0: AgenticRAG design (docs/design.md:1-11)",
+    ]
     assert "turn0search0" in session.state.references
     assert [tool_result.name for tool_result in session.state.tool_results] == ["search"]
     assert not any(message.get("role") == "tool" for message in session.state.messages)

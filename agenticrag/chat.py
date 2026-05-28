@@ -4,7 +4,12 @@ import json
 import re
 from typing import Any, Iterator, Protocol
 
-from agenticrag.loop import execute_retrieval_tool, run_agentic_loop, stream_simple_rag
+from agenticrag.loop import (
+    build_reference_id_section,
+    execute_retrieval_tool,
+    run_agentic_loop,
+    stream_simple_rag,
+)
 from agenticrag.models import ToolResult
 from agenticrag.prompts import CHAT_SIMPLE_RAG_PROMPT, QUERY_REWRITE_PROMPT
 from agenticrag.state import ConversationState
@@ -228,6 +233,7 @@ class ChatSession:
 
             if route == "simple":
                 writer("[tool] search")
+                tool_results_start_index = len(self.state.tool_results)
                 try:
                     search_context = self.tools.search([rewritten_query])
                 except Exception as exc:
@@ -243,6 +249,15 @@ class ChatSession:
                 ):
                     chunks.append(chunk)
                     yield chunk
+                answer = "".join(chunks)
+                reference_section = build_reference_id_section(
+                    self.state,
+                    answer,
+                    tool_results_start_index=tool_results_start_index,
+                )
+                if reference_section:
+                    chunks.append(reference_section)
+                    yield reference_section
                 self.state.add_message("assistant", "".join(chunks))
                 return
 
@@ -256,6 +271,7 @@ class ChatSession:
             chat_visible_messages = [dict(message) for message in self.state.messages]
             chunks = []
             completed = False
+            tool_results_start_index = len(self.state.tool_results)
             try:
                 for chunk in run_agentic_loop(
                     self.llm_client,
@@ -279,6 +295,15 @@ class ChatSession:
                 ]
             if not completed:
                 return
+            answer = "".join(chunks)
+            reference_section = build_reference_id_section(
+                self.state,
+                answer,
+                tool_results_start_index=tool_results_start_index,
+            )
+            if reference_section:
+                chunks.append(reference_section)
+                yield reference_section
             self.state.add_message("assistant", "".join(chunks))
         except Exception:
             _restore_state(self.state, pre_turn_state)

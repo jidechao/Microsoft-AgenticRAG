@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable, Iterator
 
 from agenticrag.prompts import FORCE_FINAL_ANSWER_PROMPT
@@ -13,6 +14,9 @@ QUESTION_LABEL = "\u95ee\u9898\uff1a"
 SEARCH_RESULTS_LABEL = "\u68c0\u7d22\u7ed3\u679c\uff1a"
 INVALID_TOOL_ARGUMENTS = {"_error": "invalid tool arguments"}
 NON_OBJECT_TOOL_ARGUMENTS = {"_error": "tool arguments must be a JSON object"}
+REFERENCE_ID_PATTERN = re.compile(r"\bturn\d+search\d+\b")
+REFERENCE_FALLBACK_TOOL_NAMES = {"search", "find", "open"}
+REFERENCE_FALLBACK_LIMIT = 5
 
 
 def should_force_completion(call_index: int, max_calls: int) -> bool:
@@ -32,6 +36,65 @@ def stream_simple_rag(
         },
     ]
     yield from llm_client.stream(messages)
+
+
+def build_reference_id_section(
+    state: ConversationState,
+    answer_text: str,
+    *,
+    tool_results_start_index: int = 0,
+) -> str:
+    reference_ids = _referenced_ids_in_answer(state, answer_text)
+    if not reference_ids:
+        reference_ids = _recent_tool_reference_ids(state, tool_results_start_index)
+    if not reference_ids:
+        return ""
+
+    lines = ["", "", "引用标识（Reference ID）："]
+    for reference_id in reference_ids:
+        reference = state.references[reference_id]
+        chunk = reference.chunk
+        location = f"{chunk.path.as_posix()}:{chunk.line_start + 1}-{chunk.line_end + 1}"
+        lines.append(f"- {reference_id}: {chunk.title} ({location})")
+    return "\n".join(lines)
+
+
+def _referenced_ids_in_answer(
+    state: ConversationState,
+    answer_text: str,
+) -> list[str]:
+    reference_ids: list[str] = []
+    seen: set[str] = set()
+    for reference_id in REFERENCE_ID_PATTERN.findall(answer_text):
+        if reference_id in seen or reference_id not in state.references:
+            continue
+        seen.add(reference_id)
+        reference_ids.append(reference_id)
+    return reference_ids
+
+
+def _recent_tool_reference_ids(
+    state: ConversationState,
+    start_index: int,
+) -> list[str]:
+    reference_ids: list[str] = []
+    seen: set[str] = set()
+    for tool_result in state.tool_results[start_index:]:
+        if tool_result.name not in REFERENCE_FALLBACK_TOOL_NAMES:
+            continue
+        metadata_reference_ids = tool_result.metadata.get("reference_ids")
+        if not isinstance(metadata_reference_ids, list):
+            continue
+        for reference_id in metadata_reference_ids:
+            if not isinstance(reference_id, str):
+                continue
+            if reference_id in seen or reference_id not in state.references:
+                continue
+            seen.add(reference_id)
+            reference_ids.append(reference_id)
+            if len(reference_ids) >= REFERENCE_FALLBACK_LIMIT:
+                return reference_ids
+    return reference_ids
 
 
 def _message_from_response(response: Any) -> Any:
@@ -242,15 +305,27 @@ def run_ask(query: str) -> int:
 
     route = classify_query(llm_client, query)
     if route == "simple":
+        tool_results_start_index = len(state.tool_results)
         context = tools.search([query])
+        chunks: list[str] = []
         for chunk in stream_simple_rag(llm_client, query, context):
+            chunks.append(chunk)
             print(chunk, end="", flush=True)
+        reference_section = build_reference_id_section(
+            state,
+            "".join(chunks),
+            tool_results_start_index=tool_results_start_index,
+        )
+        if reference_section:
+            print(reference_section, end="", flush=True)
         print()
         return 0
 
     def execute_tool(name: str, arguments: dict[str, Any]) -> str:
         return execute_retrieval_tool(tools, name, arguments)
 
+    tool_results_start_index = len(state.tool_results)
+    chunks = []
     for chunk in run_agentic_loop(
         llm_client,
         state,
@@ -260,6 +335,14 @@ def run_ask(query: str) -> int:
         token_warning_ratio=config.token_warning_ratio,
         status_writer=lambda text: print(text, flush=True),
     ):
+        chunks.append(chunk)
         print(chunk, end="", flush=True)
+    reference_section = build_reference_id_section(
+        state,
+        "".join(chunks),
+        tool_results_start_index=tool_results_start_index,
+    )
+    if reference_section:
+        print(reference_section, end="", flush=True)
     print()
     return 0
