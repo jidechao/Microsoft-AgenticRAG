@@ -217,6 +217,7 @@ def test_run_ask_complex_route_streams_status_and_chunks(monkeypatch, capsys, tm
         token_threshold,
         token_warning_ratio,
         status_writer,
+        require_current_turn_retrieval=False,
     ):
         calls.append(
             (
@@ -227,6 +228,7 @@ def test_run_ask_complex_route_streams_status_and_chunks(monkeypatch, capsys, tm
                 token_warning_ratio,
             )
         )
+        assert require_current_turn_retrieval is True
         status_writer("[tool] search")
         assert tool_executor("search", {"queries": [query]}) == "search result"
         assert tool_executor("find", {"reference_id": "ref-1", "patterns": ["agent"]}) == "find result"

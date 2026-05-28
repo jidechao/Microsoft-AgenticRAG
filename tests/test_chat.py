@@ -64,6 +64,32 @@ def test_build_reference_id_section_prefers_ids_used_in_answer():
     )
 
 
+def test_build_reference_id_section_ignores_explicit_stale_refs():
+    state = ConversationState(user_query="question")
+    state.references["turn0search0"] = make_reference("turn0search0")
+    state.references["turn1search0"] = make_reference("turn1search0")
+    state.add_tool_result(
+        "search",
+        "old context",
+        metadata={"reference_ids": ["turn0search0"]},
+    )
+    current_start = len(state.tool_results)
+    state.add_tool_result(
+        "search",
+        "current context",
+        metadata={"reference_ids": ["turn1search0"]},
+    )
+
+    section = build_reference_id_section(
+        state,
+        "Answer cites stale [turn0search0] and current [turn1search0].",
+        tool_results_start_index=current_start,
+    )
+
+    assert "turn0search0" not in section
+    assert "- turn1search0: Reference title (docs/file.md:1-20)" in section
+
+
 def test_build_reference_id_section_falls_back_to_tool_metadata():
     state = ConversationState(user_query="question")
     state.references["turn0search0"] = make_reference("turn0search0")
@@ -752,6 +778,7 @@ def test_chat_session_complex_route_streams_status_and_records_answer(monkeypatc
         token_threshold,
         token_warning_ratio,
         status_writer,
+        require_current_turn_retrieval=False,
     ):
         assert llm_client is fake_llm_client
         assert state is session.state
@@ -847,6 +874,7 @@ def test_chat_session_complex_route_removes_internal_loop_messages_and_keeps_ref
         token_threshold,
         token_warning_ratio,
         status_writer,
+        require_current_turn_retrieval=False,
     ):
         state.messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
         state.add_message(
@@ -961,6 +989,7 @@ def test_chat_session_simple_then_complex_drops_stale_tool_messages(monkeypatch)
         token_threshold,
         token_warning_ratio,
         status_writer,
+        require_current_turn_retrieval=False,
     ):
         captured_complex_messages.extend(dict(message) for message in state.messages)
         assert not any(message.get("role") == "tool" for message in state.messages)

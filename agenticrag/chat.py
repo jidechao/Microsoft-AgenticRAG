@@ -285,6 +285,7 @@ class ChatSession:
                     token_threshold=self.token_threshold,
                     token_warning_ratio=self.token_warning_ratio,
                     status_writer=writer,
+                    require_current_turn_retrieval=True,
                 ):
                     chunks.append(chunk)
                     yield chunk

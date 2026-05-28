@@ -17,6 +17,13 @@ NON_OBJECT_TOOL_ARGUMENTS = {"_error": "tool arguments must be a JSON object"}
 REFERENCE_ID_PATTERN = re.compile(r"\bturn\d+search\d+\b")
 REFERENCE_FALLBACK_TOOL_NAMES = {"search", "find", "open"}
 REFERENCE_FALLBACK_LIMIT = 5
+CURRENT_TURN_TOOL_REQUIRED_PROMPT = (
+    "A current-turn retrieval tool call is required before answering this complex "
+    "turn. Call search, find, or open now; do not answer from prior references alone."
+)
+CURRENT_TURN_RETRIEVAL_FAILED_MESSAGE = (
+    "证据不足：当前复杂问题没有成功的本轮检索结果，无法生成可靠回答。"
+)
 
 
 def should_force_completion(call_index: int, max_calls: int) -> bool:
@@ -44,9 +51,18 @@ def build_reference_id_section(
     *,
     tool_results_start_index: int = 0,
 ) -> str:
-    reference_ids = _referenced_ids_in_answer(state, answer_text)
+    current_reference_ids = _recent_tool_reference_ids(
+        state,
+        tool_results_start_index,
+        limit=None,
+    )
+    reference_ids = _referenced_ids_in_answer(
+        state,
+        answer_text,
+        allowed_reference_ids=set(current_reference_ids),
+    )
     if not reference_ids:
-        reference_ids = _recent_tool_reference_ids(state, tool_results_start_index)
+        reference_ids = current_reference_ids[:REFERENCE_FALLBACK_LIMIT]
     if not reference_ids:
         return ""
 
@@ -62,10 +78,13 @@ def build_reference_id_section(
 def _referenced_ids_in_answer(
     state: ConversationState,
     answer_text: str,
+    allowed_reference_ids: set[str] | None = None,
 ) -> list[str]:
     reference_ids: list[str] = []
     seen: set[str] = set()
     for reference_id in REFERENCE_ID_PATTERN.findall(answer_text):
+        if allowed_reference_ids is not None and reference_id not in allowed_reference_ids:
+            continue
         if reference_id in seen or reference_id not in state.references:
             continue
         seen.add(reference_id)
@@ -76,6 +95,8 @@ def _referenced_ids_in_answer(
 def _recent_tool_reference_ids(
     state: ConversationState,
     start_index: int,
+    *,
+    limit: int | None = REFERENCE_FALLBACK_LIMIT,
 ) -> list[str]:
     reference_ids: list[str] = []
     seen: set[str] = set()
@@ -92,9 +113,63 @@ def _recent_tool_reference_ids(
                 continue
             seen.add(reference_id)
             reference_ids.append(reference_id)
-            if len(reference_ids) >= REFERENCE_FALLBACK_LIMIT:
+            if limit is not None and len(reference_ids) >= limit:
                 return reference_ids
     return reference_ids
+
+
+def _has_current_turn_retrieval_result(
+    state: ConversationState,
+    start_index: int,
+) -> bool:
+    return bool(_recent_tool_reference_ids(state, start_index, limit=1))
+
+
+def _latest_user_query(state: ConversationState) -> str:
+    for message in reversed(state.messages):
+        if message.get("role") != "user":
+            continue
+        content = str(message.get("content", "")).strip()
+        match = re.search(
+            r"Rewritten self-contained question:\s*(.+)",
+            content,
+            flags=re.DOTALL,
+        )
+        if match:
+            return match.group(1).strip()
+        if content:
+            return content
+    return state.user_query
+
+
+def _remove_new_tool_messages(state: ConversationState, start_index: int) -> None:
+    state.messages = [
+        *state.messages[:start_index],
+        *[
+            message
+            for message in state.messages[start_index:]
+            if message.get("role") != "tool"
+        ],
+    ]
+
+
+def _run_automatic_search(
+    state: ConversationState,
+    tool_executor: Callable[[str, dict[str, Any]], str],
+    status_writer: Callable[[str], None],
+) -> str:
+    status_writer("[tool] search")
+    message_start_index = len(state.messages)
+    result = tool_executor("search", {"queries": [_latest_user_query(state)]})
+    _remove_new_tool_messages(state, message_start_index)
+    if result.startswith("[tool error]"):
+        status_writer(result)
+    else:
+        state.add_message(
+            "system",
+            "Current-turn automatic search result:\n" + result,
+        )
+    return result
 
 
 def _message_from_response(response: Any) -> Any:
@@ -220,8 +295,12 @@ def run_agentic_loop(
     token_threshold: int,
     token_warning_ratio: float,
     status_writer: Callable[[str], None],
+    require_current_turn_retrieval: bool = False,
 ) -> Iterator[str]:
     _ensure_system_prompt(state)
+    tool_results_start_index = len(state.tool_results)
+    prompted_for_current_turn_tool = False
+    automatic_search_attempted = False
 
     for call_index in range(1, max_calls + 1):
         state.maybe_add_token_warning(token_threshold, token_warning_ratio)
@@ -251,6 +330,8 @@ def run_agentic_loop(
                 status_writer(f"[tool] {name}")
                 message_start_index = len(state.messages)
                 result = tool_executor(name, arguments)
+                if result.startswith("[tool error]"):
+                    status_writer(result)
                 tool_call_id = _tool_call_id(tool_call)
                 if not _attach_tool_call_id_to_new_tool_message(
                     state,
@@ -268,11 +349,33 @@ def run_agentic_loop(
 
         content = _get_value(message, "content") or ""
         if content:
+            if require_current_turn_retrieval and not _has_current_turn_retrieval_result(
+                state,
+                tool_results_start_index,
+            ):
+                if not automatic_search_attempted:
+                    _run_automatic_search(state, tool_executor, status_writer)
+                    automatic_search_attempted = True
+                    if _has_current_turn_retrieval_result(
+                        state,
+                        tool_results_start_index,
+                    ):
+                        continue
+                state.add_message("system", CURRENT_TURN_TOOL_REQUIRED_PROMPT)
+                prompted_for_current_turn_tool = True
+                continue
             yield content
         return
 
-    state.add_message("system", FORCE_FINAL_ANSWER_PROMPT)
-    yield from llm_client.stream(state.messages)
+    if (
+        not require_current_turn_retrieval
+        or _has_current_turn_retrieval_result(state, tool_results_start_index)
+    ):
+        state.add_message("system", FORCE_FINAL_ANSWER_PROMPT)
+        yield from llm_client.stream(state.messages)
+        return
+
+    yield CURRENT_TURN_RETRIEVAL_FAILED_MESSAGE
 
 
 def run_ask(query: str) -> int:
@@ -334,6 +437,7 @@ def run_ask(query: str) -> int:
         token_threshold=config.token_threshold,
         token_warning_ratio=config.token_warning_ratio,
         status_writer=lambda text: print(text, flush=True),
+        require_current_turn_retrieval=True,
     ):
         chunks.append(chunk)
         print(chunk, end="", flush=True)

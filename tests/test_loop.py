@@ -1,6 +1,10 @@
+from pathlib import Path
 from types import SimpleNamespace
 
+from agenticrag.models import DocumentChunk
+from agenticrag.models import Reference
 from agenticrag.loop import execute_retrieval_tool
+from agenticrag.loop import CURRENT_TURN_TOOL_REQUIRED_PROMPT
 from agenticrag.loop import run_agentic_loop
 from agenticrag.loop import should_force_completion
 from agenticrag.loop import stream_simple_rag
@@ -69,6 +73,33 @@ def tool_call(call_id, name, arguments):
         id=call_id,
         function=SimpleNamespace(name=name, arguments=arguments),
     )
+
+
+def add_reference_result(
+    state,
+    name="search",
+    reference_id="turn0search0",
+    content="tool result",
+):
+    state.references[reference_id] = Reference(
+        reference_id=reference_id,
+        chunk=DocumentChunk(
+            doc_id=f"doc-{reference_id}",
+            path=Path(f"docs/{reference_id}.md"),
+            title="Reference",
+            filetype="markdown",
+            chunk_index=0,
+            line_start=0,
+            line_end=1,
+            content="Reference content.",
+        ),
+    )
+    state.add_tool_result(
+        name,
+        content,
+        metadata={"reference_ids": [reference_id]},
+    )
+    return content
 
 
 def test_should_force_completion_at_max_calls():
@@ -199,7 +230,7 @@ def test_run_agentic_loop_executes_tool_and_returns_final_answer():
 
     def execute(name, arguments):
         tool_calls.append((name, arguments))
-        return "tool result"
+        return add_reference_result(state, name)
 
     chunks = list(
         run_agentic_loop(
@@ -210,6 +241,7 @@ def test_run_agentic_loop_executes_tool_and_returns_final_answer():
             token_threshold=10_000,
             token_warning_ratio=0.8,
             status_writer=statuses.append,
+            require_current_turn_retrieval=True,
         )
     )
 
@@ -239,6 +271,90 @@ def test_run_agentic_loop_executes_tool_and_returns_final_answer():
     }
 
 
+def test_run_agentic_loop_requires_current_turn_retrieval_before_final_answer():
+    tool = tool_call("call-1", "search", '{"queries": ["alpha"]}')
+    llm = FakeLLM(
+        responses=[
+            message_response(content="premature final from history"),
+            message_response(tool_calls=[tool]),
+            message_response(content="final answer"),
+        ]
+    )
+    state = ConversationState(user_query="question")
+    statuses = []
+    tool_calls = []
+
+    def execute(name, arguments):
+        tool_calls.append((name, arguments))
+        return add_reference_result(
+            state,
+            name,
+            reference_id="turn0search0",
+            content="current search result",
+        )
+
+    chunks = list(
+        run_agentic_loop(
+            llm,
+            state,
+            execute,
+            max_calls=3,
+            token_threshold=10_000,
+            token_warning_ratio=0.8,
+            status_writer=statuses.append,
+            require_current_turn_retrieval=True,
+        )
+    )
+
+    assert chunks == ["final answer"]
+    assert statuses == ["[tool] search", "[tool] search"]
+    assert tool_calls == [
+        ("search", {"queries": ["question"]}),
+        ("search", {"queries": ["alpha"]}),
+    ]
+    assert not any(
+        message.get("role") == "system"
+        and message.get("content") == CURRENT_TURN_TOOL_REQUIRED_PROMPT
+        for message in state.messages
+    )
+
+
+def test_run_agentic_loop_streams_tool_error_status():
+    tool = tool_call("call-1", "search", '{"queries": "not-a-list"}')
+    llm = FakeLLM(
+        responses=[
+            message_response(tool_calls=[tool]),
+            message_response(content="final answer"),
+        ]
+    )
+    state = ConversationState(user_query="question")
+    statuses = []
+
+    chunks = list(
+        run_agentic_loop(
+            llm,
+            state,
+            lambda name, arguments: execute_retrieval_tool(
+                FakeRetrievalTools(),
+                name,
+                arguments,
+            ),
+            max_calls=2,
+            token_threshold=10_000,
+            token_warning_ratio=0.8,
+            status_writer=statuses.append,
+            require_current_turn_retrieval=True,
+        )
+    )
+
+    assert chunks == ["证据不足：当前复杂问题没有成功的本轮检索结果，无法生成可靠回答。"]
+    assert statuses == [
+        "[tool] search",
+        "[tool error] search: queries must be a list",
+        "[tool] search",
+    ]
+
+
 def test_run_agentic_loop_forces_final_answer_after_max_calls():
     tool = tool_call("call-1", "search", '{"queries": ["alpha"]}')
     llm = FakeLLM(
@@ -246,12 +362,14 @@ def test_run_agentic_loop_forces_final_answer_after_max_calls():
         stream_chunks=["forced", " answer"],
     )
     state = ConversationState(user_query="question")
+    def execute(name, arguments):
+        return add_reference_result(state, name)
 
     chunks = list(
         run_agentic_loop(
             llm,
             state,
-            lambda name, arguments: "tool result",
+            execute,
             max_calls=1,
             token_threshold=10_000,
             token_warning_ratio=0.8,
@@ -289,20 +407,29 @@ def test_run_agentic_loop_summarizes_when_token_threshold_is_reached():
 
 
 def test_run_agentic_loop_inserts_system_prompt_once_at_beginning_across_runs():
+    first_tool = tool_call("call-1", "search", '{"queries": ["first"]}')
+    second_tool = tool_call("call-2", "search", '{"queries": ["second"]}')
     llm = FakeLLM(
         responses=[
+            message_response(tool_calls=[first_tool]),
             message_response(content="first"),
+            message_response(tool_calls=[second_tool]),
             message_response(content="second"),
         ]
     )
     state = ConversationState(user_query="question")
+    tool_calls = []
+
+    def execute(name, arguments):
+        tool_calls.append((name, arguments))
+        return add_reference_result(state, name)
 
     first = list(
         run_agentic_loop(
             llm,
             state,
-            lambda name, arguments: "",
-            max_calls=1,
+            execute,
+            max_calls=2,
             token_threshold=10_000,
             token_warning_ratio=0.8,
             status_writer=lambda status: None,
@@ -312,8 +439,8 @@ def test_run_agentic_loop_inserts_system_prompt_once_at_beginning_across_runs():
         run_agentic_loop(
             llm,
             state,
-            lambda name, arguments: "",
-            max_calls=1,
+            execute,
+            max_calls=2,
             token_threshold=10_000,
             token_warning_ratio=0.8,
             status_writer=lambda status: None,
@@ -327,6 +454,10 @@ def test_run_agentic_loop_inserts_system_prompt_once_at_beginning_across_runs():
     ]
     assert first == ["first"]
     assert second == ["second"]
+    assert tool_calls == [
+        ("search", {"queries": ["first"]}),
+        ("search", {"queries": ["second"]}),
+    ]
     assert len(system_prompts) == 1
     assert state.messages[0] == {"role": "system", "content": SYSTEM_PROMPT}
 
@@ -362,7 +493,8 @@ def test_run_agentic_loop_handles_dict_shaped_tool_calls():
         run_agentic_loop(
             llm,
             state,
-            lambda name, arguments: tool_calls.append((name, arguments)) or "found",
+            lambda name, arguments: tool_calls.append((name, arguments))
+            or add_reference_result(state, name, reference_id="ref", content="found"),
             max_calls=2,
             token_threshold=10_000,
             token_warning_ratio=0.8,
@@ -488,7 +620,13 @@ def test_run_agentic_loop_adds_provider_tool_call_id_to_tool_executor_messages()
 
 
 def test_run_agentic_loop_compresses_state_when_token_threshold_is_reached():
-    llm = FakeLLM(responses=[message_response(content="done")])
+    tool = tool_call("call-1", "search", '{"queries": ["current"]}')
+    llm = FakeLLM(
+        responses=[
+            message_response(tool_calls=[tool]),
+            message_response(content="done"),
+        ]
+    )
     state = ConversationState(user_query="question")
     state.references["keep"] = SimpleNamespace()
     state.add_tool_result(
@@ -507,8 +645,18 @@ def test_run_agentic_loop_compresses_state_when_token_threshold_is_reached():
         run_agentic_loop(
             llm,
             state,
-            lambda name, arguments: tool_calls.append((name, arguments)) or "summary",
-            max_calls=1,
+            lambda name, arguments: tool_calls.append((name, arguments))
+            or (
+                "summary"
+                if name == "summarize"
+                else add_reference_result(
+                    state,
+                    name,
+                    reference_id="current",
+                    content="current search result",
+                )
+            ),
+            max_calls=2,
             token_threshold=0,
             token_warning_ratio=0.8,
             status_writer=lambda status: None,
@@ -521,8 +669,13 @@ def test_run_agentic_loop_compresses_state_when_token_threshold_is_reached():
     assert state.tool_results[1].content == (
         "[compressed search result unrelated to retained references]"
     )
-    assert [message["content"] for message in tool_messages] == [
+    assert [message["content"] for message in tool_messages[:2]] == [
         "retained full result content",
         "[compressed search result unrelated to retained references]",
     ]
-    assert tool_calls == [("summarize", {"candidate_reference_ids": ["keep"]})]
+    assert tool_messages[-1]["content"] == "current search result"
+    assert tool_calls == [
+        ("summarize", {"candidate_reference_ids": ["keep"]}),
+        ("search", {"queries": ["current"]}),
+        ("summarize", {"candidate_reference_ids": ["keep", "current"]}),
+    ]
